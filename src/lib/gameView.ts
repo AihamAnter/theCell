@@ -36,6 +36,7 @@ export type LobbyMemberView = {
   role: 'owner' | 'player' | 'spectator' | null
   is_ready: boolean | null
   joined_at: string | null
+  last_seen_at: string | null
   profiles?: ProfileLite | null
 }
 
@@ -67,6 +68,7 @@ export type GameViewActions = {
 const ENABLE_POLL_FALLBACK = true
 const POLL_MS = 1200
 const MEMBERS_POLL_MS = 6000
+const HEARTBEAT_MS = 10_000
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -92,7 +94,7 @@ async function loadLobbyCode(lobbyId: string): Promise<string | null> {
 async function loadMembers(lobbyId: string): Promise<LobbyMemberView[]> {
   const { data: lm, error: lmErr } = await supabase
     .from('lobby_members')
-    .select('user_id,team,is_spymaster,role,is_ready,joined_at')
+    .select('user_id,team,is_spymaster,role,is_ready,joined_at,last_seen_at')
     .eq('lobby_id', lobbyId)
     .order('joined_at', { ascending: true })
 
@@ -293,6 +295,35 @@ export function useGameView(gameIdRaw: string | null | undefined): { state: Game
       void supabase.removeChannel(channel)
     }
   }, [gameId, lobbyId])
+
+  // ✅ HEARTBEAT (updates last_seen_at for "online" indicator)
+  useEffect(() => {
+    if (!lobbyId) return
+    if (!me?.userId) return
+
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        await supabase
+          .from('lobby_members')
+          .update({ last_seen_at: new Date().toISOString() })
+          .eq('lobby_id', lobbyId)
+          .eq('user_id', me.userId)
+      } catch {
+        // ignore
+      }
+    }
+
+    void tick()
+
+    const t = window.setInterval(() => {
+      void tick()
+    }, HEARTBEAT_MS)
+
+    return () => {
+      window.clearInterval(t)
+    }
+  }, [lobbyId, me?.userId])
 
   // Poll fallback (keeps UI live even when realtime fails)
   useEffect(() => {

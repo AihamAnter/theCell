@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import { getLobbyByCode, joinLobby, type Lobby } from '../lib/lobbies'
@@ -18,13 +18,14 @@ type MemberRow = {
   is_spymaster: boolean
   is_ready: boolean
   joined_at: string
-  last_seen_at: string
+  last_seen_at: string | null
   profiles?: ProfileLite | null
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
 
-const REQUIRE_ALL_READY_TO_START = false
+const ONLINE_MS = 25_000
+const HEARTBEAT_MS = 10_000
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -47,6 +48,44 @@ function displayNameFor(m: MemberRow, index: number): string {
   return `Player ${index + 1}`
 }
 
+function readBool(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key)
+    if (v === null) return fallback
+    return v === '1'
+  } catch {
+    return fallback
+  }
+}
+
+function writeBool(key: string, val: boolean) {
+  try {
+    localStorage.setItem(key, val ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
+
+function clearKey(key: string) {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    // ignore
+  }
+}
+
+function isOnline(lastSeen: string | null | undefined): boolean {
+  if (!lastSeen) return false
+  const ms = Date.parse(lastSeen)
+  if (!Number.isFinite(ms)) return false
+  return Date.now() - ms <= ONLINE_MS
+}
+
+function statusPill(lastSeen: string | null | undefined): { text: string; bg: string } {
+  if (isOnline(lastSeen)) return { text: 'online', bg: 'rgba(40,190,120,0.16)' }
+  return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
+}
+
 export default function LobbyRoute() {
   const { code } = useParams()
   const navigate = useNavigate()
@@ -60,6 +99,53 @@ export default function LobbyRoute() {
   const [isOwner, setIsOwner] = useState(false)
   const [myUserId, setMyUserId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+
+  const [notice, setNotice] = useState<string | null>(null)
+  const noticeTimerRef = useRef<number | null>(null)
+
+  const [requireReady, setRequireReady] = useState<boolean>(() => readBool('oneclue_require_ready_start', false))
+  useEffect(() => {
+    writeBool('oneclue_require_ready_start', requireReady)
+  }, [requireReady])
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current)
+    }
+  }, [])
+
+  function showNotice(msg: string) {
+    setNotice(msg)
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current)
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 2200)
+  }
+
+  async function copyText(label: string, text: string) {
+    const clean = String(text ?? '').trim()
+    if (!clean) return
+
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(clean)
+        showNotice(`${label} copied`)
+        return
+      }
+      window.prompt(`Copy ${label}:`, clean)
+      showNotice('Copied manually')
+    } catch {
+      window.prompt(`Copy ${label}:`, clean)
+      showNotice('Copied manually')
+    }
+  }
+
+  const lobbyLink = useMemo(() => {
+    if (!lobbyCode) return ''
+    try {
+      return `${window.location.origin}/lobby/${lobbyCode}`
+    } catch {
+      return `/lobby/${lobbyCode}`
+    }
+  }, [lobbyCode])
 
   async function refreshMembers(lobbyId: string) {
     const { data, error } = await supabase
@@ -101,6 +187,13 @@ export default function LobbyRoute() {
 
         await joinLobby(lobbyCode)
 
+        // ✅ store for auto-rejoin
+        try {
+          localStorage.setItem('oneclue_last_lobby_code', lobbyCode)
+        } catch {
+          // ignore
+        }
+
         const l = await getLobbyByCode(lobbyCode)
         if (cancelled) return
         setLobby(l)
@@ -128,18 +221,15 @@ export default function LobbyRoute() {
     }
   }, [lobbyCode])
 
+  // Realtime
   useEffect(() => {
     if (!lobby?.id) return
 
     const channel = supabase
-      .channel(`lobby:${lobby.id}`, { config: { private: true } })
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobby.id}` },
-        async () => {
-          await refreshMembers(lobby.id)
-        }
-      )
+      .channel(`lobby_${lobby.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobby.id}` }, async () => {
+        await refreshMembers(lobby.id)
+      })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lobbies', filter: `id=eq.${lobby.id}` }, async () => {
         const updated = await getLobbyByCode(lobbyCode)
         setLobby(updated)
@@ -151,17 +241,47 @@ export default function LobbyRoute() {
     }
   }, [lobby?.id, lobbyCode])
 
+  // Heartbeat
+  useEffect(() => {
+    if (!lobby?.id) return
+    if (!myUserId) return
+
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        await supabase
+          .from('lobby_members')
+          .update({ last_seen_at: new Date().toISOString() })
+          .eq('lobby_id', lobby.id)
+          .eq('user_id', myUserId)
+      } catch {
+        // ignore
+      }
+    }
+
+    void tick()
+
+    const t = window.setInterval(() => {
+      void tick()
+    }, HEARTBEAT_MS)
+
+    return () => {
+      window.clearInterval(t)
+    }
+  }, [lobby?.id, myUserId])
+
   const playable = members.filter((m) => m.role === 'owner' || m.role === 'player')
   const redSpy = playable.filter((m) => m.team === 'red' && m.is_spymaster).length
   const blueSpy = playable.filter((m) => m.team === 'blue' && m.is_spymaster).length
   const redOps = playable.filter((m) => m.team === 'red' && !m.is_spymaster).length
   const blueOps = playable.filter((m) => m.team === 'blue' && !m.is_spymaster).length
 
-  const allPlayableReady = playable.length > 0 && playable.every((m) => m.is_ready === true)
+  const readyCount = playable.filter((m) => m.is_ready).length
+  const playableCount = playable.length
+  const readyOk = playableCount > 0 && readyCount === playableCount
 
-  const baseCanStart =
-    isOwner && lobby?.status === 'open' && redSpy === 1 && blueSpy === 1 && redOps >= 1 && blueOps >= 1
-  const canStart = REQUIRE_ALL_READY_TO_START ? baseCanStart && allPlayableReady : baseCanStart
+  const baseCanStart = isOwner && lobby?.status === 'open' && redSpy === 1 && blueSpy === 1 && redOps >= 1 && blueOps >= 1
+  const canStart = Boolean(baseCanStart && (!requireReady || readyOk))
 
   async function handleSetTeam(targetUserId: string, team: 'red' | 'blue') {
     if (!lobby) return
@@ -203,17 +323,32 @@ export default function LobbyRoute() {
     }
   }
 
-  async function handleToggleMyReady() {
+  async function handleStartGame() {
+    if (!lobby) return
+    try {
+      setBusy('Starting game…')
+      const gameId = await startGame(lobby.id)
+      navigate(`/game/${gameId}`)
+    } catch (err) {
+      console.error('[lobby] start game failed:', err)
+      alert(supaErr(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleToggleReady() {
     if (!lobby) return
     if (!myUserId) return
-    const me = members.find((m) => m.user_id === myUserId)
-    if (!me) return
+
+    const mine = members.find((m) => m.user_id === myUserId)
+    const next = !(mine?.is_ready ?? false)
 
     try {
-      setBusy(me.is_ready ? 'Marking not ready…' : 'Marking ready…')
+      setBusy(next ? 'Setting ready…' : 'Setting not ready…')
       const { error } = await supabase
         .from('lobby_members')
-        .update({ is_ready: !me.is_ready })
+        .update({ is_ready: next })
         .eq('lobby_id', lobby.id)
         .eq('user_id', myUserId)
 
@@ -227,16 +362,26 @@ export default function LobbyRoute() {
     }
   }
 
-  async function handleStartGame() {
+  async function handleLeaveLobby() {
     if (!lobby) return
-    try {
-      setBusy('Starting game…')
-      const gameId = await startGame(lobby.id)
+    if (!myUserId) return
 
-      // Step 6 change: go to styled UI by default.
-      navigate(`/game-ui/${gameId}`)
+    const ok = window.confirm('Leave this lobby?')
+    if (!ok) return
+
+    try {
+      setBusy('Leaving…')
+
+      // remove membership
+      const { error } = await supabase.from('lobby_members').delete().eq('lobby_id', lobby.id).eq('user_id', myUserId)
+      if (error) throw error
+
+      // clear auto rejoin
+      clearKey('oneclue_last_lobby_code')
+
+      navigate('/', { replace: true })
     } catch (err) {
-      console.error('[lobby] start game failed:', err)
+      console.error('[lobby] leave failed:', err)
       alert(supaErr(err))
     } finally {
       setBusy(null)
@@ -244,7 +389,6 @@ export default function LobbyRoute() {
   }
 
   const myRow = myUserId ? members.find((m) => m.user_id === myUserId) : null
-  const myIndex = myRow ? members.findIndex((x) => x.user_id === myRow.user_id) : -1
 
   return (
     <div style={{ minHeight: '100vh', padding: 16, background: '#0b0b0f', color: '#fff' }}>
@@ -252,13 +396,8 @@ export default function LobbyRoute() {
         <button onClick={() => navigate('/')}>Back</button>
         <button onClick={() => navigate(`/settings/${lobbyCode}`)}>Settings</button>
         <button onClick={() => navigate('/profile')}>Profile</button>
-
-        <button
-          onClick={handleToggleMyReady}
-          disabled={!myRow || lobby?.status !== 'open' || busy !== null || myRow.role === 'spectator'}
-          style={{ marginLeft: 'auto' }}
-        >
-          {myRow?.is_ready ? 'Not ready' : 'Ready'}
+        <button onClick={handleLeaveLobby} disabled={!myRow || busy !== null} style={{ marginLeft: 'auto' }}>
+          Leave lobby
         </button>
       </div>
 
@@ -278,16 +417,62 @@ export default function LobbyRoute() {
             <p style={{ margin: 0, opacity: 0.9 }}>
               Code: <b>{lobby.code}</b>
             </p>
-            <p style={{ margin: '6px 0 0 0', opacity: 0.8 }}>
+
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button onClick={() => copyText('code', lobby.code)} disabled={!lobby.code}>
+                Copy code
+              </button>
+              <button onClick={() => copyText('invite link', lobbyLink)} disabled={!lobbyLink}>
+                Copy invite link
+              </button>
+              {notice && (
+                <span
+                  style={{
+                    opacity: 0.85,
+                    padding: '4px 10px',
+                    borderRadius: 999,
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    background: '#111118'
+                  }}
+                >
+                  {notice}
+                </span>
+              )}
+            </div>
+
+            <p style={{ margin: '10px 0 0 0', opacity: 0.8 }}>
               Status: <b>{lobby.status}</b> • Owner: <b>{isOwner ? 'you' : 'no'}</b>
             </p>
 
             {myRow && (
               <p style={{ margin: '10px 0 0 0', opacity: 0.9 }}>
-                You: <b>{myIndex >= 0 ? displayNameFor(myRow, myIndex) : '—'}</b> • team <b>{myRow.team ?? '—'}</b> • role{' '}
-                <b>{myRow.is_spymaster ? 'spymaster' : 'operative'}</b> • ready <b>{myRow.is_ready ? 'yes' : 'no'}</b>
+                You: <b>{displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id))}</b> • team{' '}
+                <b>{myRow.team ?? '—'}</b> • role <b>{myRow.is_spymaster ? 'spymaster' : 'operative'}</b> • ready{' '}
+                <b>{myRow.is_ready ? 'yes' : 'no'}</b>
               </p>
             )}
+
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button onClick={handleToggleReady} disabled={!myRow || busy !== null || lobby.status !== 'open'}>
+                {myRow?.is_ready ? 'Set not ready' : 'Set ready'}
+              </button>
+
+              {isOwner && (
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.95 }}>
+                  <input
+                    type="checkbox"
+                    checked={requireReady}
+                    onChange={(e) => setRequireReady(e.target.checked)}
+                    disabled={lobby.status !== 'open'}
+                  />
+                  <span>Require ready to start</span>
+                </label>
+              )}
+
+              <span style={{ opacity: 0.85 }}>
+                Ready: <b>{readyCount}</b>/<b>{playableCount}</b>
+              </span>
+            </div>
 
             <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: '1px solid #1f1f29', background: '#111118' }}>
               <div style={{ opacity: 0.9, marginBottom: 6 }}>Setup needed to start:</div>
@@ -295,28 +480,21 @@ export default function LobbyRoute() {
                 Red: spymaster <b>{redSpy}</b>, operatives <b>{redOps}</b> • Blue: spymaster <b>{blueSpy}</b>, operatives <b>{blueOps}</b>
               </div>
 
-              <div style={{ marginTop: 8, opacity: 0.85 }}>
-                Ready: <b>{playable.filter((m) => m.is_ready).length}</b> / <b>{playable.length}</b>
-                {REQUIRE_ALL_READY_TO_START && (
-                  <>
-                    {' '}
-                    • required: <b>{allPlayableReady ? 'met' : 'not met'}</b>
-                  </>
-                )}
-              </div>
+              {requireReady && (
+                <div style={{ marginTop: 6, opacity: 0.85 }}>
+                  Ready required: <b>{readyOk ? 'ok' : 'not yet'}</b>
+                </div>
+              )}
 
               <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <button onClick={handleStartGame} disabled={!canStart || busy !== null}>
-                  Start Game (UI)
+                <button onClick={handleStartGame} disabled={!canStart}>
+                  Start Game
                 </button>
-                {!baseCanStart && <span style={{ opacity: 0.8 }}>Need 1 spymaster + 1 operative per team.</span>}
-                {baseCanStart && REQUIRE_ALL_READY_TO_START && !allPlayableReady && (
-                  <span style={{ opacity: 0.8 }}>All players must be ready.</span>
+                {!canStart && (
+                  <span style={{ opacity: 0.8 }}>
+                    Need 1 spymaster + 1 operative per team{requireReady ? ' + everyone ready' : ''}.
+                  </span>
                 )}
-              </div>
-
-              <div style={{ marginTop: 10, opacity: 0.8 }}>
-                Tip: debug screen is still available at <code>/game/&lt;gameId&gt;</code>.
               </div>
             </div>
           </div>
@@ -325,54 +503,75 @@ export default function LobbyRoute() {
             <h3 style={{ marginTop: 0 }}>Members</h3>
 
             <div style={{ display: 'grid', gap: 8 }}>
-              {members.map((m, idx) => (
-                <div
-                  key={m.user_id}
-                  style={{
-                    padding: 10,
-                    borderRadius: 10,
-                    border: '1px solid #1f1f29',
-                    background: '#111118',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 12
-                  }}
-                >
-                  <div style={{ overflow: 'hidden' }}>
-                    <div style={{ fontWeight: 800 }}>
-                      {displayNameFor(m, idx)} {m.user_id === myUserId ? <span style={{ opacity: 0.7 }}>(you)</span> : null}
-                    </div>
-                    <div style={{ marginTop: 4, opacity: 0.9 }}>
-                      team: <b>{m.team ?? '—'}</b> • role: <b>{m.is_spymaster ? 'spymaster' : 'operative'}</b> • lobby role: <b>{m.role}</b> •
-                      ready: <b>{m.is_ready ? 'yes' : 'no'}</b>
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gap: 6, textAlign: 'right' }}>
-                    {isOwner && lobby.status === 'open' && m.role !== 'spectator' && (
-                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                        <button onClick={() => handleSetTeam(m.user_id, 'red')} disabled={busy !== null}>
-                          To red
-                        </button>
-                        <button onClick={() => handleSetTeam(m.user_id, 'blue')} disabled={busy !== null}>
-                          To blue
-                        </button>
-                        {m.team ? (
-                          m.is_spymaster ? (
-                            <button onClick={() => handleToggleSpymaster(m.user_id, false)} disabled={busy !== null}>
-                              Make operative
-                            </button>
-                          ) : (
-                            <button onClick={() => handleToggleSpymaster(m.user_id, true)} disabled={busy !== null}>
-                              Make spymaster
-                            </button>
-                          )
-                        ) : null}
+              {members.map((m, idx) => {
+                const pill = statusPill(m.last_seen_at)
+                return (
+                  <div
+                    key={m.user_id}
+                    style={{
+                      padding: 10,
+                      borderRadius: 10,
+                      border: '1px solid #1f1f29',
+                      background: '#111118',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      alignItems: 'center'
+                    }}
+                  >
+                    <div style={{ overflow: 'hidden' }}>
+                      <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 12, opacity: 0.75 }}>{m.user_id}</div>
+                      <div style={{ marginTop: 4, opacity: 0.9 }}>
+                        team: <b>{m.team ?? '—'}</b> • role: <b>{m.is_spymaster ? 'spymaster' : 'operative'}</b> • lobby role:{' '}
+                        <b>{m.role}</b>
                       </div>
-                    )}
+                    </div>
+
+                    <div style={{ display: 'grid', gap: 6, textAlign: 'right' }}>
+                      <div
+                        style={{
+                          justifySelf: 'end',
+                          fontSize: 12,
+                          opacity: 0.9,
+                          padding: '4px 8px',
+                          borderRadius: 999,
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: pill.bg
+                        }}
+                      >
+                        {pill.text}
+                      </div>
+
+                      <div style={{ opacity: 0.85 }}>
+                        ready: <b>{m.is_ready ? 'yes' : 'no'}</b>
+                      </div>
+
+                      {isOwner && lobby.status === 'open' && m.role !== 'spectator' && (
+                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                          <button onClick={() => handleSetTeam(m.user_id, 'red')} disabled={busy !== null}>
+                            To red
+                          </button>
+                          <button onClick={() => handleSetTeam(m.user_id, 'blue')} disabled={busy !== null}>
+                            To blue
+                          </button>
+                          {m.team ? (
+                            m.is_spymaster ? (
+                              <button onClick={() => handleToggleSpymaster(m.user_id, false)} disabled={busy !== null}>
+                                Make operative
+                              </button>
+                            ) : (
+                              <button onClick={() => handleToggleSpymaster(m.user_id, true)} disabled={busy !== null}>
+                                Make spymaster
+                              </button>
+                            )
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             {lobby.status !== 'open' && <p style={{ marginTop: 10, opacity: 0.8 }}>Roles/teams are locked after start.</p>}

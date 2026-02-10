@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CardColor, GameCard } from '../lib/games'
 import type { GameViewActions, GameViewState, LobbyMemberView, Team } from '../lib/gameView'
 
@@ -10,6 +10,13 @@ type Props = {
   onOpenProfile: () => void
   onOpenSettings: () => void
 }
+
+type ToastTone = 'info' | 'success' | 'warning' | 'danger'
+type ToastItem = { id: string; text: string; tone: ToastTone }
+
+const TOAST_MS = 2400
+const ONLINE_MS = 25_000
+const REVEAL_COOLDOWN_MS = 900
 
 function displayNameFor(m: LobbyMemberView, index: number): string {
   const n = (m.profiles?.display_name ?? '').trim()
@@ -45,6 +52,45 @@ function winnerText(w: any): string {
   return 'Game over'
 }
 
+function readBool(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key)
+    if (v === null) return fallback
+    return v === '1'
+  } catch {
+    return fallback
+  }
+}
+
+function writeBool(key: string, val: boolean) {
+  try {
+    localStorage.setItem(key, val ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
+
+function colorLabel(c: any): string {
+  const s = String(c ?? '').toLowerCase()
+  if (s === 'red') return 'red'
+  if (s === 'blue') return 'blue'
+  if (s === 'neutral') return 'neutral'
+  if (s === 'assassin') return 'assassin'
+  return s || 'unknown'
+}
+
+function isOnline(lastSeen: string | null | undefined): boolean {
+  if (!lastSeen) return false
+  const ms = Date.parse(lastSeen)
+  if (!Number.isFinite(ms)) return false
+  return Date.now() - ms <= ONLINE_MS
+}
+
+function statusPill(lastSeen: string | null | undefined): { text: string; bg: string } {
+  if (isOnline(lastSeen)) return { text: 'online', bg: 'rgba(40,190,120,0.16)' }
+  return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
+}
+
 export default function GameBoard(props: Props) {
   const { state, actions, onBackToHome, onBackToLobby, onOpenProfile, onOpenSettings } = props
 
@@ -54,6 +100,39 @@ export default function GameBoard(props: Props) {
   const [clueWord, setClueWord] = useState('')
   const [clueNumber, setClueNumber] = useState(1)
   const [busy, setBusy] = useState<string | null>(null)
+
+  const [confirmReveal, setConfirmReveal] = useState<boolean>(() => readBool('oneclue_confirm_reveal', true))
+  useEffect(() => {
+    writeBool('oneclue_confirm_reveal', confirmReveal)
+  }, [confirmReveal])
+
+  // action locks / cooldowns
+  const inFlightRef = useRef<{ clue: boolean; reveal: boolean; end: boolean }>({ clue: false, reveal: false, end: false })
+  const lastRevealAtRef = useRef<number>(0)
+
+  // Toasts
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const toastTimeoutsRef = useRef<number[]>([])
+  const didInitRef = useRef(false)
+
+  function addToast(text: string, tone: ToastTone = 'info') {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setToasts((prev) => [...prev, { id, text, tone }])
+
+    const t = window.setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id))
+      toastTimeoutsRef.current = toastTimeoutsRef.current.filter((x) => x !== t)
+    }, TOAST_MS)
+
+    toastTimeoutsRef.current.push(t)
+  }
+
+  useEffect(() => {
+    return () => {
+      toastTimeoutsRef.current.forEach((t) => window.clearTimeout(t))
+      toastTimeoutsRef.current = []
+    }
+  }, [])
 
   const boardSize = useMemo(() => {
     const n = state.cards.length
@@ -70,18 +149,29 @@ export default function GameBoard(props: Props) {
   const blueTeam = useMemo(() => playableMembers.filter((m) => m.team === 'blue'), [playableMembers])
   const spectators = useMemo(() => state.members.filter((m) => m.role === 'spectator'), [state.members])
 
+  const membersById = useMemo(() => {
+    const map = new Map<string, LobbyMemberView>()
+    for (const m of state.members) map.set(m.user_id, m)
+    return map
+  }, [state.members])
+
   const status = (game?.status ?? 'unknown') as string
   const isActive = status === 'active'
   const isSetup = status === 'setup'
   const isEnded = !isActive && !isSetup && Boolean(game)
 
   const myTeam = me?.team ?? null
-  const isMyTurn = Boolean(game && myTeam && game.current_turn_team === myTeam)
+  const turnTeam = (game?.current_turn_team ?? null) as Team | null
+  const isMyTurn = Boolean(game && myTeam && turnTeam === myTeam)
   const hasClue = game?.guesses_remaining !== null && game?.guesses_remaining !== undefined
 
   const canGiveClue = Boolean(isActive && me?.isSpymaster && isMyTurn)
-  const canReveal = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
-  const canEndTurn = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+  const canRevealBase = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+  const canEndTurnBase = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+
+  const revealCooldownOk = Date.now() - lastRevealAtRef.current >= REVEAL_COOLDOWN_MS
+  const canReveal = canRevealBase && revealCooldownOk && !inFlightRef.current.reveal
+  const canEndTurn = canEndTurnBase && !inFlightRef.current.end
 
   const realtimeBadge = useMemo(() => {
     const s = state.realtimeStatus
@@ -89,53 +179,6 @@ export default function GameBoard(props: Props) {
     if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT' || s === 'CLOSED') return 'realtime: OFF (polling)'
     return 'realtime: …'
   }, [state.realtimeStatus])
-
-  async function doSendClue() {
-    if (!canGiveClue) return
-    const w = clueWord.trim()
-    if (!w) return
-    const n = guardNumber(clueNumber)
-
-    try {
-      setBusy('Setting clue…')
-      await actions.sendClue(w, n)
-      setClueWord('')
-      setClueNumber(1)
-    } catch (err) {
-      console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to set clue')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  async function doReveal(card: GameCard) {
-    if (!canReveal) return
-    if (card.revealed) return
-
-    try {
-      setBusy('Revealing…')
-      await actions.reveal(card.pos)
-    } catch (err) {
-      console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to reveal')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  async function doEndTurn() {
-    if (!canEndTurn) return
-    try {
-      setBusy('Ending turn…')
-      await actions.endTurn()
-    } catch (err) {
-      console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to end turn')
-    } finally {
-      setBusy(null)
-    }
-  }
 
   const myMemberIndex = useMemo(() => {
     if (!me?.userId) return -1
@@ -147,8 +190,223 @@ export default function GameBoard(props: Props) {
     return displayNameFor(state.members[myMemberIndex], myMemberIndex)
   }, [me, myMemberIndex, state.members])
 
+  const turnPill = useMemo(() => {
+    const isRed = turnTeam === 'red'
+    const isBlue = turnTeam === 'blue'
+
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '4px 10px',
+          borderRadius: 999,
+          border: '1px solid rgba(255,255,255,0.12)',
+          background: isRed ? 'rgba(255,60,60,0.18)' : isBlue ? 'rgba(80,140,255,0.18)' : 'rgba(255,255,255,0.06)'
+        }}
+      >
+        <span style={{ opacity: 0.85 }}>Turn</span>
+        <b>{teamLabel(turnTeam)}</b>
+        <span style={{ opacity: 0.85 }}>{isMyTurn ? '(you)' : ''}</span>
+      </span>
+    )
+  }, [turnTeam, isMyTurn])
+
+  const blockReason = useMemo(() => {
+    if (!isActive) return null
+    if (me?.isSpymaster) return null
+    if (!isMyTurn) return 'Not your turn.'
+    if (!hasClue) return 'Wait for your spymaster to give a clue.'
+    if (!revealCooldownOk) return 'Wait a moment…'
+    return null
+  }, [isActive, me?.isSpymaster, isMyTurn, hasClue, revealCooldownOk])
+
+  // Event detection for toasts
+  const prevGameRef = useRef<any>(null)
+  const prevCardsRef = useRef<Map<number, any>>(new Map())
+
+  useEffect(() => {
+    if (!game) return
+    if (!didInitRef.current) {
+      didInitRef.current = true
+      prevGameRef.current = game
+      const m = new Map<number, any>()
+      for (const c of state.cards) m.set(Number(c.pos), c)
+      prevCardsRef.current = m
+      return
+    }
+
+    const prev = prevGameRef.current
+    prevGameRef.current = game
+
+    if (prev) {
+      if (prev.current_turn_team !== game.current_turn_team && game.current_turn_team) {
+        addToast(`Turn: ${teamLabel(game.current_turn_team as any)}`, 'info')
+      }
+
+      const prevClue = (prev.clue_word ?? '').trim()
+      const nextClue = (game.clue_word ?? '').trim()
+      if (prevClue !== nextClue && nextClue) {
+        addToast(`Clue: ${nextClue} (${game.clue_number ?? '—'})`, 'info')
+      }
+
+      if (prev.status !== game.status && String(game.status) !== 'active' && String(game.status) !== 'setup') {
+        addToast(winnerText((game as any).winning_team), 'success')
+      }
+    }
+  }, [game]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!didInitRef.current) return
+    if (!state.cards || state.cards.length === 0) return
+
+    const prevMap = prevCardsRef.current
+    const nextMap = new Map<number, any>()
+    for (const c of state.cards) nextMap.set(Number(c.pos), c)
+
+    for (const c of state.cards) {
+      const pos = Number(c.pos)
+      const prev = prevMap.get(pos)
+
+      if (prev && !prev.revealed && c.revealed) {
+        const actorId = c.revealed_by ? String(c.revealed_by) : ''
+        const actor = actorId ? membersById.get(actorId) : null
+        const actorName = actor ? displayNameFor(actor, state.members.findIndex((x) => x.user_id === actor.user_id)) : 'Someone'
+        const actorTeam = actor?.team ?? null
+        const rc = colorLabel(c.revealed_color)
+
+        let tone: ToastTone = 'info'
+        let text = `${actorName} revealed "${c.word}" (${rc}).`
+
+        if (rc === 'assassin') {
+          tone = 'danger'
+          const win = (state.game as any)?.winning_team ? winnerText((state.game as any).winning_team) : 'Game over'
+          text = `${actorName} revealed the assassin. ${win}.`
+        } else if (actorTeam && rc === String(actorTeam)) {
+          tone = 'success'
+          text = `${actorName} found a ${rc} agent: "${c.word}".`
+        } else if (rc === 'neutral') {
+          tone = 'info'
+          text = `${actorName} hit neutral: "${c.word}".`
+        } else {
+          tone = 'warning'
+          text = `${actorName} hit enemy: "${c.word}" (${rc}).`
+        }
+
+        addToast(text, tone)
+      }
+    }
+
+    prevCardsRef.current = nextMap
+  }, [state.cards, membersById, state.members, state.game]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function doSendClue() {
+    if (!canGiveClue) return
+    if (inFlightRef.current.clue) return
+
+    const w = clueWord.trim()
+    if (!w) return
+    const n = guardNumber(clueNumber)
+
+    try {
+      inFlightRef.current.clue = true
+      setBusy('Setting clue…')
+      await actions.sendClue(w, n)
+      setClueWord('')
+      setClueNumber(1)
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to set clue')
+    } finally {
+      inFlightRef.current.clue = false
+      setBusy(null)
+    }
+  }
+
+  async function doReveal(card: GameCard) {
+    if (!canRevealBase) return
+    if (!revealCooldownOk) return
+    if (inFlightRef.current.reveal) return
+    if (card.revealed) return
+
+    if (confirmReveal) {
+      const ok = window.confirm(`Reveal "${card.word}"?`)
+      if (!ok) return
+    }
+
+    try {
+      inFlightRef.current.reveal = true
+      lastRevealAtRef.current = Date.now()
+      setBusy('Revealing…')
+      await actions.reveal(card.pos)
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to reveal')
+    } finally {
+      inFlightRef.current.reveal = false
+      setBusy(null)
+    }
+  }
+
+  async function doEndTurn() {
+    if (!canEndTurnBase) return
+    if (inFlightRef.current.end) return
+
+    try {
+      inFlightRef.current.end = true
+      setBusy('Ending turn…')
+      await actions.endTurn()
+      addToast('Turn ended.', 'info')
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to end turn')
+    } finally {
+      inFlightRef.current.end = false
+      setBusy(null)
+    }
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16, position: 'relative' }}>
+      {/* Toast stack */}
+      <div
+        aria-live="polite"
+        style={{
+          position: 'fixed',
+          top: 12,
+          right: 12,
+          zIndex: 999999,
+          display: 'grid',
+          gap: 8,
+          width: 360,
+          maxWidth: 'calc(100vw - 24px)'
+        }}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.12)',
+              background:
+                t.tone === 'success'
+                  ? 'rgba(40,190,120,0.16)'
+                  : t.tone === 'warning'
+                    ? 'rgba(240,190,70,0.16)'
+                    : t.tone === 'danger'
+                      ? 'rgba(255,80,80,0.16)'
+                      : 'rgba(0,0,0,0.55)',
+              color: '#fff',
+              boxShadow: '0 12px 32px rgba(0,0,0,0.35)'
+            }}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <button onClick={onBackToLobby}>Lobby</button>
         <button onClick={onBackToHome}>Classic</button>
@@ -164,6 +422,11 @@ export default function GameBoard(props: Props) {
           </label>
         )}
 
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 8, opacity: 0.95 }}>
+          <input type="checkbox" checked={confirmReveal} onChange={(e) => setConfirmReveal(e.target.checked)} />
+          <span>Confirm reveal</span>
+        </label>
+
         <div style={{ opacity: 0.8, fontSize: 12, marginLeft: 8 }}>{realtimeBadge}</div>
 
         <button onClick={() => actions.refresh()} style={{ marginLeft: 'auto' }}>
@@ -172,12 +435,32 @@ export default function GameBoard(props: Props) {
       </div>
 
       <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ opacity: 0.9 }}>
             You: <b>{myDisplayName}</b> • team <b>{teamLabel(myTeam)}</b> • role <b>{me?.isSpymaster ? 'spymaster' : 'operative'}</b>
           </div>
-          <div style={{ opacity: 0.9 }}>
-            Turn: <b>{teamLabel(game?.current_turn_team ?? null)}</b> • guesses left: <b>{game?.guesses_remaining ?? '—'}</b>
+
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '4px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(255,255,255,0.12)',
+                background:
+                  turnTeam === 'red' ? 'rgba(255,60,60,0.18)' : turnTeam === 'blue' ? 'rgba(80,140,255,0.18)' : 'rgba(255,255,255,0.06)'
+              }}
+            >
+              <span style={{ opacity: 0.85 }}>Turn</span>
+              <b>{teamLabel(turnTeam)}</b>
+              <span style={{ opacity: 0.85 }}>{isMyTurn ? '(you)' : ''}</span>
+            </span>
+
+            <div style={{ opacity: 0.9 }}>
+              guesses left: <b>{game?.guesses_remaining ?? '—'}</b>
+            </div>
           </div>
         </div>
 
@@ -190,34 +473,66 @@ export default function GameBoard(props: Props) {
           Red left: <b>{game?.red_remaining ?? '—'}</b> • Blue left: <b>{game?.blue_remaining ?? '—'}</b> • status:{' '}
           <b>{status}</b>
         </div>
+
+        {blockReason && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 10,
+              borderRadius: 10,
+              border: '1px solid #2a2a35',
+              background: '#0d0d14',
+              opacity: 0.95
+            }}
+          >
+            {blockReason}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr 280px', gap: 12, marginTop: 12 }}>
         <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
           <div style={{ fontWeight: 900, marginBottom: 10 }}>Red Team</div>
           <div style={{ display: 'grid', gap: 8 }}>
-            {redTeam.map((m, idx) => (
-              <div
-                key={m.user_id}
-                style={{
-                  padding: 10,
-                  borderRadius: 10,
-                  border: '1px solid #1f1f29',
-                  background: '#0d0d14',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  gap: 10
-                }}
-              >
-                <div style={{ overflow: 'hidden' }}>
-                  <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                    {m.is_spymaster ? 'spymaster' : 'operative'}
-                    {m.is_ready ? ' • ready' : ''}
+            {redTeam.map((m, idx) => {
+              const pill = statusPill(m.last_seen_at)
+              return (
+                <div
+                  key={m.user_id}
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    border: '1px solid #1f1f29',
+                    background: '#0d0d14',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    alignItems: 'center'
+                  }}
+                >
+                  <div style={{ overflow: 'hidden' }}>
+                    <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>
+                      {m.is_spymaster ? 'spymaster' : 'operative'}
+                      {m.is_ready ? ' • ready' : ''}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 12,
+                      opacity: 0.9,
+                      padding: '4px 8px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      background: pill.bg
+                    }}
+                  >
+                    {pill.text}
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
             {redTeam.length === 0 && <div style={{ opacity: 0.75 }}>no players</div>}
           </div>
         </div>
@@ -253,7 +568,7 @@ export default function GameBoard(props: Props) {
                     width: 120
                   }}
                 />
-                <button onClick={doSendClue} disabled={busy !== null || clueWord.trim().length === 0}>
+                <button onClick={doSendClue} disabled={busy !== null || clueWord.trim().length === 0 || inFlightRef.current.clue}>
                   Set clue
                 </button>
               </div>
@@ -265,7 +580,7 @@ export default function GameBoard(props: Props) {
               <button onClick={doEndTurn} disabled={!canEndTurn || busy !== null}>
                 End turn
               </button>
-              {!canReveal && isActive && <div style={{ opacity: 0.8 }}>You can reveal only on your turn, after a clue.</div>}
+              {!canRevealBase && isActive && <div style={{ opacity: 0.8 }}>Reveals are locked right now.</div>}
             </div>
           )}
 
@@ -273,12 +588,14 @@ export default function GameBoard(props: Props) {
             {state.cards.map((c) => {
               const hint = state.showKey ? state.keyByPos.get(c.pos) : undefined
               const hintText = hint ? keyLetter(hint) : ''
+              const revealEnabled = isActive && canReveal && !c.revealed && busy === null
 
               return (
                 <button
                   key={c.pos}
                   onClick={() => doReveal(c)}
-                  disabled={busy !== null || !isActive || c.revealed || !canReveal}
+                  disabled={!revealEnabled}
+                  title={!revealEnabled ? blockReason ?? '' : ''}
                   style={{
                     position: 'relative',
                     padding: 12,
@@ -288,8 +605,8 @@ export default function GameBoard(props: Props) {
                     color: '#fff',
                     textAlign: 'left',
                     minHeight: 62,
-                    opacity: c.revealed ? 0.65 : 1,
-                    cursor: c.revealed || !canReveal ? 'not-allowed' : 'pointer'
+                    opacity: c.revealed ? 0.65 : revealEnabled ? 1 : 0.55,
+                    cursor: revealEnabled ? 'pointer' : 'not-allowed'
                   }}
                 >
                   {hintText && !c.revealed && (
@@ -314,7 +631,7 @@ export default function GameBoard(props: Props) {
                   <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
                     {c.revealed ? (
                       <>
-                        revealed • <b>{c.revealed_color ?? '—'}</b>
+                        revealed • <b>{String(c.revealed_color ?? '—')}</b>
                       </>
                     ) : (
                       <>hidden</>
@@ -329,28 +646,45 @@ export default function GameBoard(props: Props) {
         <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
           <div style={{ fontWeight: 900, marginBottom: 10 }}>Blue Team</div>
           <div style={{ display: 'grid', gap: 8 }}>
-            {blueTeam.map((m, idx) => (
-              <div
-                key={m.user_id}
-                style={{
-                  padding: 10,
-                  borderRadius: 10,
-                  border: '1px solid #1f1f29',
-                  background: '#0d0d14',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  gap: 10
-                }}
-              >
-                <div style={{ overflow: 'hidden' }}>
-                  <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                    {m.is_spymaster ? 'spymaster' : 'operative'}
-                    {m.is_ready ? ' • ready' : ''}
+            {blueTeam.map((m, idx) => {
+              const pill = statusPill(m.last_seen_at)
+              return (
+                <div
+                  key={m.user_id}
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    border: '1px solid #1f1f29',
+                    background: '#0d0d14',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    alignItems: 'center'
+                  }}
+                >
+                  <div style={{ overflow: 'hidden' }}>
+                    <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>
+                      {m.is_spymaster ? 'spymaster' : 'operative'}
+                      {m.is_ready ? ' • ready' : ''}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 12,
+                      opacity: 0.9,
+                      padding: '4px 8px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      background: pill.bg
+                    }}
+                  >
+                    {pill.text}
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
             {blueTeam.length === 0 && <div style={{ opacity: 0.75 }}>no players</div>}
           </div>
 
@@ -358,11 +692,26 @@ export default function GameBoard(props: Props) {
             <>
               <div style={{ marginTop: 14, fontWeight: 900, opacity: 0.95 }}>Spectators</div>
               <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-                {spectators.map((m, idx) => (
-                  <div key={m.user_id} style={{ opacity: 0.85, fontSize: 13 }}>
-                    {displayNameFor(m, idx)}
-                  </div>
-                ))}
+                {spectators.map((m, idx) => {
+                  const pill = statusPill(m.last_seen_at)
+                  return (
+                    <div key={m.user_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                      <div style={{ opacity: 0.85, fontSize: 13 }}>{displayNameFor(m, idx)}</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          opacity: 0.9,
+                          padding: '4px 8px',
+                          borderRadius: 999,
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: pill.bg
+                        }}
+                      >
+                        {pill.text}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </>
           )}
