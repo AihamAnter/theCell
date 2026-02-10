@@ -31,7 +31,7 @@ export type GameCard = {
 
 export type CardColor = 'red' | 'blue' | 'neutral' | 'assassin'
 
-type RevealResult = {
+export type RevealResult = {
   revealed_color: CardColor
   game_status: 'setup' | 'active' | 'finished' | 'abandoned'
   current_turn: 'red' | 'blue'

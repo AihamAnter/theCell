@@ -207,6 +207,9 @@ export default function GameRoute() {
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <button onClick={() => navigate('/')}>Home</button>
         <button onClick={() => navigate(-1)}>Back</button>
+        <button onClick={() => navigate(`/game-ui/${gameId}`)} disabled={!gameId}>
+          UI Preview
+        </button>
       </div>
 
       <h2 style={{ marginBottom: 8 }}>Game</h2>

@@ -6,6 +6,7 @@ import { ensureSession } from './lib/auth'
 import HomeRoute from './routes/HomeRoute'
 import LobbyRoute from './routes/LobbyRoute'
 import GameRoute from './routes/GameRoute'
+import GameUiRoute from './routes/GameUiRoute'
 import ProfileRoute from './routes/ProfileRoute'
 import SettingsRoute from './routes/SettingsRoute'
 
@@ -66,6 +67,7 @@ export default function App() {
       <Route path="/" element={<HomeRoute />} />
       <Route path="/lobby/:code" element={<LobbyRoute />} />
       <Route path="/game/:id" element={<GameRoute />} />
+      <Route path="/game-ui/:id" element={<GameUiRoute />} />
       <Route path="/profile" element={<ProfileRoute />} />
       <Route path="/settings/:code" element={<SettingsRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />

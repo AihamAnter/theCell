@@ -1,602 +1,421 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { cards } from '../data/cards'
+import { useMemo, useState } from 'react'
+import type { CardColor, GameCard } from '../lib/games'
+import type { GameViewActions, GameViewState, LobbyMemberView, Team } from '../lib/gameView'
 
-type Team = 'blue' | 'red'
-
-type RevealResult = 'assassin' | 'correct' | 'wrong'
-
-type ToastTone = 'info' | 'success' | 'warning' | 'danger'
-
-type Toast = {
-  id: string
-  text: string
-  tone: ToastTone
-}
-
-type GameBoardProps = {
+type Props = {
+  state: GameViewState
+  actions: GameViewActions
   onBackToHome: () => void
+  onBackToLobby: () => void
   onOpenProfile: () => void
   onOpenSettings: () => void
 }
 
-const TOAST_MS = 2400
+function displayNameFor(m: LobbyMemberView, index: number): string {
+  const n = (m.profiles?.display_name ?? '').trim()
+  if (n) return n
+  return `Player ${index + 1}`
+}
 
-export default function GameBoard({ onBackToHome, onOpenProfile, onOpenSettings }: GameBoardProps) {
-  const initialCounts = useMemo(() => {
-    return cards.reduce(
-      (acc, card) => {
-        if (card.cls === 'isBlue') acc.blue += 1
-        if (card.cls === 'isRed') acc.red += 1
-        return acc
-      },
-      { blue: 0, red: 0 }
-    )
-  }, [])
+function keyLetter(c: CardColor): string {
+  if (c === 'assassin') return 'A'
+  if (c === 'neutral') return 'N'
+  if (c === 'red') return 'R'
+  return 'B'
+}
 
-  const [revealed, setRevealed] = useState<Set<number>>(() => new Set<number>())
-  const [currentTeam, setCurrentTeam] = useState<Team>('blue')
-  const [blueRemaining, setBlueRemaining] = useState(initialCounts.blue)
-  const [redRemaining, setRedRemaining] = useState(initialCounts.red)
-  const [toasts, setToasts] = useState<Toast[]>([])
-  const [isTurnPulseOn, setIsTurnPulseOn] = useState(false)
-  const [winner, setWinner] = useState<Team | ''>('')
-  const toastTimeoutsRef = useRef<number[]>([])
-  const revealTimeoutsRef = useRef<number[]>([])
-  const revealFxTimeoutsRef = useRef<number[]>([])
-  const [pendingReveals, setPendingReveals] = useState<Set<number>>(() => new Set<number>())
-  const [revealFxByCard, setRevealFxByCard] = useState<Record<number, RevealResult>>({})
-  const [revealResultByCard, setRevealResultByCard] = useState<Record<number, RevealResult>>({})
+function teamLabel(t: Team | null): string {
+  if (t === 'red') return 'Red'
+  if (t === 'blue') return 'Blue'
+  return '—'
+}
 
-  const gameOver = Boolean(winner)
-  const hasPendingReveal = pendingReveals.size > 0
+function guardNumber(n: number): number {
+  if (!Number.isFinite(n)) return 0
+  if (n < 0) return 0
+  if (n > 9) return 9
+  return Math.floor(n)
+}
 
-  useEffect(() => {
-    setIsTurnPulseOn(true)
-    const timeoutId = window.setTimeout(() => setIsTurnPulseOn(false), 720)
-    return () => window.clearTimeout(timeoutId)
-  }, [currentTeam])
+function winnerText(w: any): string {
+  const s = String(w ?? '').toLowerCase()
+  if (s === 'red') return 'Red wins'
+  if (s === 'blue') return 'Blue wins'
+  if (s) return `Winner: ${s}`
+  return 'Game over'
+}
 
-  useEffect(() => {
-    return () => {
-      toastTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
-      revealTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
-      revealFxTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
+export default function GameBoard(props: Props) {
+  const { state, actions, onBackToHome, onBackToLobby, onOpenProfile, onOpenSettings } = props
+
+  const game = state.game
+  const me = state.me
+
+  const [clueWord, setClueWord] = useState('')
+  const [clueNumber, setClueNumber] = useState(1)
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const boardSize = useMemo(() => {
+    const n = state.cards.length
+    const r = Math.round(Math.sqrt(n))
+    return r > 0 ? r : 5
+  }, [state.cards.length])
+
+  const playableMembers = useMemo(
+    () => state.members.filter((m) => m.role === 'owner' || m.role === 'player'),
+    [state.members]
+  )
+
+  const redTeam = useMemo(() => playableMembers.filter((m) => m.team === 'red'), [playableMembers])
+  const blueTeam = useMemo(() => playableMembers.filter((m) => m.team === 'blue'), [playableMembers])
+  const spectators = useMemo(() => state.members.filter((m) => m.role === 'spectator'), [state.members])
+
+  const status = (game?.status ?? 'unknown') as string
+  const isActive = status === 'active'
+  const isSetup = status === 'setup'
+  const isEnded = !isActive && !isSetup && Boolean(game)
+
+  const myTeam = me?.team ?? null
+  const isMyTurn = Boolean(game && myTeam && game.current_turn_team === myTeam)
+  const hasClue = game?.guesses_remaining !== null && game?.guesses_remaining !== undefined
+
+  const canGiveClue = Boolean(isActive && me?.isSpymaster && isMyTurn)
+  const canReveal = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+  const canEndTurn = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+
+  const realtimeBadge = useMemo(() => {
+    const s = state.realtimeStatus
+    if (s === 'SUBSCRIBED') return 'realtime: OK'
+    if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT' || s === 'CLOSED') return 'realtime: OFF (polling)'
+    return 'realtime: …'
+  }, [state.realtimeStatus])
+
+  async function doSendClue() {
+    if (!canGiveClue) return
+    const w = clueWord.trim()
+    if (!w) return
+    const n = guardNumber(clueNumber)
+
+    try {
+      setBusy('Setting clue…')
+      await actions.sendClue(w, n)
+      setClueWord('')
+      setClueNumber(1)
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to set clue')
+    } finally {
+      setBusy(null)
     }
-  }, [])
-
-  const addToast = (text: string, tone: ToastTone = 'info') => {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    setToasts((prev) => [...prev, { id, text, tone }])
-
-    const timeoutId = window.setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id))
-      toastTimeoutsRef.current = toastTimeoutsRef.current.filter((activeId) => activeId !== timeoutId)
-    }, TOAST_MS)
-
-    toastTimeoutsRef.current.push(timeoutId)
   }
 
-  const switchTurn = () => {
-    setCurrentTeam((prev) => (prev === 'blue' ? 'red' : 'blue'))
+  async function doReveal(card: GameCard) {
+    if (!canReveal) return
+    if (card.revealed) return
+
+    try {
+      setBusy('Revealing…')
+      await actions.reveal(card.pos)
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to reveal')
+    } finally {
+      setBusy(null)
+    }
   }
 
-  const endTurn = () => {
-    if (gameOver) return
-    switchTurn()
-    addToast('Turn ended. Other team is up.', 'info')
+  async function doEndTurn() {
+    if (!canEndTurn) return
+    try {
+      setBusy('Ending turn…')
+      await actions.endTurn()
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'failed to end turn')
+    } finally {
+      setBusy(null)
+    }
   }
 
-  const handleReveal = (idx: number) => {
-    if (gameOver || hasPendingReveal || revealed.has(idx) || pendingReveals.has(idx)) return
+  const myMemberIndex = useMemo(() => {
+    if (!me?.userId) return -1
+    return state.members.findIndex((m) => m.user_id === me.userId)
+  }, [me?.userId, state.members])
 
-    const card = cards[idx]
-    const teamAtPick = currentTeam
-    const teamClass = teamAtPick === 'blue' ? 'isBlue' : 'isRed'
-    const enemyClass = teamAtPick === 'blue' ? 'isRed' : 'isBlue'
+  const myDisplayName = useMemo(() => {
+    if (!me || myMemberIndex < 0) return '—'
+    return displayNameFor(state.members[myMemberIndex], myMemberIndex)
+  }, [me, myMemberIndex, state.members])
 
-    const setRevealFx = (cardIndex: number, tone: RevealResult) => {
-      setRevealFxByCard((prev) => ({ ...prev, [cardIndex]: tone }))
-      const fxTimeout = window.setTimeout(() => {
-        setRevealFxByCard((prev) => {
-          const next = { ...prev }
-          delete next[cardIndex]
-          return next
-        })
-        revealFxTimeoutsRef.current = revealFxTimeoutsRef.current.filter((id) => id !== fxTimeout)
-      }, 900)
-      revealFxTimeoutsRef.current.push(fxTimeout)
-    }
-
-    setPendingReveals((prev) => {
-      const next = new Set(prev)
-      next.add(idx)
-      return next
-    })
-
-    const timeoutId = window.setTimeout(() => {
-      revealTimeoutsRef.current = revealTimeoutsRef.current.filter((activeId) => activeId !== timeoutId)
-
-      setPendingReveals((prev) => {
-        const next = new Set(prev)
-        next.delete(idx)
-        return next
-      })
-
-      setRevealed((prev) => {
-        const next = new Set(prev)
-        next.add(idx)
-        return next
-      })
-
-      if (card.cls === 'isBlue') {
-        setBlueRemaining((prev) => Math.max(0, prev - 1))
-      }
-
-      if (card.cls === 'isRed') {
-        setRedRemaining((prev) => Math.max(0, prev - 1))
-      }
-
-      if (card.assassin) {
-        setRevealResultByCard((prev) => ({ ...prev, [idx]: 'assassin' }))
-        setRevealFx(idx, 'assassin')
-        const nextWinner = teamAtPick === 'blue' ? 'red' : 'blue'
-        setWinner(nextWinner)
-        addToast(`Assassin picked. ${nextWinner.toUpperCase()} wins.`, 'danger')
-        return
-      }
-
-      if (card.cls === teamClass) {
-        setRevealResultByCard((prev) => ({ ...prev, [idx]: 'correct' }))
-        setRevealFx(idx, 'correct')
-        addToast(`${teamAtPick.toUpperCase()} found their agent.`, 'success')
-        return
-      }
-
-      if (card.cls === enemyClass) {
-        setRevealResultByCard((prev) => ({ ...prev, [idx]: 'wrong' }))
-        setRevealFx(idx, 'wrong')
-        addToast(`${teamAtPick.toUpperCase()} hit enemy agent. Turn passes.`, 'warning')
-        switchTurn()
-        return
-      }
-
-      setRevealResultByCard((prev) => ({ ...prev, [idx]: 'wrong' }))
-      setRevealFx(idx, 'wrong')
-      addToast('Neutral card revealed. Turn passes.', 'info')
-      switchTurn()
-    }, 1000)
-
-    revealTimeoutsRef.current.push(timeoutId)
-  }
-
-  useEffect(() => {
-    if (blueRemaining === 0) {
-      setWinner('blue')
-      addToast('BLUE cleared all agents and wins.', 'success')
-    }
-  }, [blueRemaining])
-
-  useEffect(() => {
-    if (redRemaining === 0) {
-      setWinner('red')
-      addToast('RED cleared all agents and wins.', 'success')
-    }
-  }, [redRemaining])
-
-  const activeTurnLabel = currentTeam.toUpperCase()
   return (
-    <div className="scene">
-      <div className="frame">
-        <div className="toastStack" aria-live="polite" aria-label="Game events">
-          {toasts.map((toast) => (
-            <div key={toast.id} className={`toast toast-${toast.tone}`}>
-              {toast.text}
-            </div>
-          ))}
+    <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16, position: 'relative' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button onClick={onBackToLobby}>Lobby</button>
+        <button onClick={onBackToHome}>Classic</button>
+        <button onClick={onOpenSettings} disabled={!state.lobbyCode}>
+          Settings
+        </button>
+        <button onClick={onOpenProfile}>Profile</button>
+
+        {me?.isSpymaster && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 8, opacity: 0.95 }}>
+            <input type="checkbox" checked={state.showKey} onChange={(e) => actions.setShowKey(e.target.checked)} />
+            <span>Key</span>
+          </label>
+        )}
+
+        <div style={{ opacity: 0.8, fontSize: 12, marginLeft: 8 }}>{realtimeBadge}</div>
+
+        <button onClick={() => actions.refresh()} style={{ marginLeft: 'auto' }}>
+          Refresh
+        </button>
+      </div>
+
+      <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ opacity: 0.9 }}>
+            You: <b>{myDisplayName}</b> • team <b>{teamLabel(myTeam)}</b> • role <b>{me?.isSpymaster ? 'spymaster' : 'operative'}</b>
+          </div>
+          <div style={{ opacity: 0.9 }}>
+            Turn: <b>{teamLabel(game?.current_turn_team ?? null)}</b> • guesses left: <b>{game?.guesses_remaining ?? '—'}</b>
+          </div>
         </div>
 
-        <div className="layout">
-          <div className="hud">
-            <div className="hudbar">
-              <button className="hudIconBtn" type="button" onClick={onBackToHome} aria-label="Go to lobby" title="Lobby">
-                <span className="hudIcon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" role="img" focusable="false">
-                    <path d="M3 10.5L12 3l9 7.5" />
-                    <path d="M5 9.75V21h14V9.75" />
-                    <path d="M10 21v-6h4v6" />
-                  </svg>
-                </span>
-              </button>
+        <div style={{ marginTop: 8, opacity: 0.9 }}>
+          Clue: <b>{game?.clue_word ?? '—'}</b>{' '}
+          {game?.clue_number !== null && game?.clue_number !== undefined ? `(${game?.clue_number})` : ''}
+        </div>
 
-              <button className="hudIconBtn" type="button" onClick={onOpenProfile} aria-label="Open profile" title="Profile">
-                <span className="hudIcon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" role="img" focusable="false">
-                    <circle cx="12" cy="8" r="4" />
-                    <path d="M4 21c0-3.9 3.6-7 8-7s8 3.1 8 7" />
-                  </svg>
-                </span>
-              </button>
+        <div style={{ marginTop: 8, opacity: 0.9 }}>
+          Red left: <b>{game?.red_remaining ?? '—'}</b> • Blue left: <b>{game?.blue_remaining ?? '—'}</b> • status:{' '}
+          <b>{status}</b>
+        </div>
+      </div>
 
-              <button className="hudIconBtn" type="button" onClick={onOpenSettings} aria-label="Open settings" title="Settings">
-                <span className="hudIcon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" role="img" focusable="false">
-                    <circle cx="12" cy="12" r="3.25" />
-                    <path d="M19.4 15a1.75 1.75 0 0 0 .35 1.93l.07.08a2 2 0 1 1-2.82 2.82l-.08-.07a1.75 1.75 0 0 0-1.93-.35 1.75 1.75 0 0 0-1.06 1.6V21a2 2 0 1 1-4 0v-.12a1.75 1.75 0 0 0-1.06-1.6 1.75 1.75 0 0 0-1.93.35l-.08.07a2 2 0 1 1-2.82-2.82l.07-.08A1.75 1.75 0 0 0 4.6 15a1.75 1.75 0 0 0-1.6-1.06H3a2 2 0 1 1 0-4h.12a1.75 1.75 0 0 0 1.6-1.06 1.75 1.75 0 0 0-.35-1.93l-.07-.08a2 2 0 1 1 2.82-2.82l.08.07a1.75 1.75 0 0 0 1.93.35h.01A1.75 1.75 0 0 0 10.2 3H10a2 2 0 1 1 4 0h-.12a1.75 1.75 0 0 0 1.6 1.06h.01a1.75 1.75 0 0 0 1.93-.35l.08-.07a2 2 0 1 1 2.82 2.82l-.07.08a1.75 1.75 0 0 0-.35 1.93v.01A1.75 1.75 0 0 0 21 10.2h.12a2 2 0 1 1 0 4H21a1.75 1.75 0 0 0-1.6 1.06V15z" />
-                  </svg>
-                </span>
-              </button>
-
-              <div className={`plate blue ${currentTeam === 'blue' && isTurnPulseOn ? 'turnPulse' : ''}`} aria-label="Blue remaining">
-                {blueRemaining}
-              </div>
-
-              <div className="centerHud">
-                <div className="modeTitle">Classic 5x5</div>
-
-                <div className="powerMiniRow" aria-label="Powers status">
-                  <div className="miniChip">
-                    <span className="chipLabel">Streak</span>
-                    <span className="chipValue">0/4</span>
-                  </div>
-
-                  <div className="miniChip">
-                    <span className="chipLabel">Dice</span>
-                    <span className="chipValue locked">Locked</span>
-                  </div>
-
-                  <div className="miniChip">
-                    <span className="chipLabel">Helpers</span>
-                    <span className="chipValue">3</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr 280px', gap: 12, marginTop: 12 }}>
+        <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Red Team</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {redTeam.map((m, idx) => (
+              <div
+                key={m.user_id}
+                style={{
+                  padding: 10,
+                  borderRadius: 10,
+                  border: '1px solid #1f1f29',
+                  background: '#0d0d14',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 10
+                }}
+              >
+                <div style={{ overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>
+                    {m.is_spymaster ? 'spymaster' : 'operative'}
+                    {m.is_ready ? ' • ready' : ''}
                   </div>
                 </div>
               </div>
-
-              <div className={`plate red ${currentTeam === 'red' && isTurnPulseOn ? 'turnPulse' : ''}`} aria-label="Red remaining">
-                {redRemaining}
-              </div>
-            </div>
+            ))}
+            {redTeam.length === 0 && <div style={{ opacity: 0.75 }}>no players</div>}
           </div>
+        </div>
 
-          <aside className={`side blue ${currentTeam === 'blue' ? 'isActiveTurn' : ''}`}>
-            <div className="roleCard">
-              <div className="roleHead blueStrip">
-                <div className="roleTitle">Team Blue</div>
-                <div className="teamPill blue">{blueRemaining} left</div>
-              </div>
-
-              <div className="userRow">
-                <div className="namer">
-                  <div className="avatar">
-                    <img src="/assets/avatars/blue-operative.png" alt="Blue Player" />
-                  </div>
-                  <div className="userMeta">
-                    <div className="userName">Moutaz</div>
-                    <div className="userSub">Guessers</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="miniInfo">
-                <div className="miniLine">
-                  <span className="miniLabel">Turn</span>
-                  <span className="turnPill blue">{currentTeam === 'blue' ? 'BLUE' : 'WAIT'}</span>
-                </div>
-
-                <div className="miniLine">
-                  <span className="miniLabel">Guesses left</span>
-                  <span className="miniValue">2</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="roleCard">
-              <div className="roleHead">
-                <div className="roleTitle">Spymaster</div>
-                <div className="teamPill">Hint</div>
-              </div>
-
-              <div className="userRow">
-                <div className="namer">
-                  <div className="avatar">
-                    <img src="/assets/avatars/blue-spymaster.png" alt="Blue Spymaster" />
-                  </div>
-                  <div className="userMeta">
-                    <div className="userName">Enkido</div>
-                    <div className="userSub">Gives clue</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="hintReadout">
-                <div className="hintLabel">Current clue</div>
-                <div className="hintValue">???? • 2</div>
-              </div>
-            </div>
-
-            <div className="roleCard">
-              <div className="roleHead blueStrip">
-                <div className="roleTitle">Powers</div>
-                <div className="teamPill blue">Once/Unlock</div>
-              </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Streak</div>
-                  <div className="powerNote">Unlock dice at 4 correct links</div>
-                </div>
-
-                <div className="streakRow" aria-label="Streak meter">
-                  <div className="streakLabel">0 / 4</div>
-                  <div className="streakDots">
-                    <span className="dot"></span>
-                    <span className="dot"></span>
-                    <span className="dot"></span>
-                    <span className="dot"></span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Dice</div>
-                  <div className="powerNote">
-                    <span className="lockedText">Locked until streak</span>
-                  </div>
-                </div>
-
-                <div className="diceRow">
-                  <button className="powerBtn powerBtnPurple" type="button" disabled>
-                    <span className="btnIco">
-                      <img src="/assets/icons/dice.svg" alt="" />
-                    </span>
-                    Roll Dice
-                  </button>
-                  <div className="diceHint">Roll gives 1 effect (see list below)</div>
-                </div>
-              </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Helper Actions</div>
-                  <div className="powerNote">Each once per game</div>
-                </div>
-
-                <div className="helperGrid">
-                  <button className="helperBtn" type="button">
-                    <span className="btnIco">
-                      <img src="/assets/icons/time.svg" alt="" />
-                    </span>
-                    Time Cut
-                  </button>
-
-                  <button className="helperBtn" type="button">
-                    <span className="btnIco">
-                      <img src="/assets/icons/peek.svg" alt="" />
-                    </span>
-                    Random Peek
-                  </button>
-
-                  <button className="helperBtn" type="button">
-                    <span className="btnIco">
-                      <img src="/assets/icons/shuffle.svg" alt="" />
-                    </span>
-                    Shuffle
-                  </button>
-                </div>
-              </div>
-            </div>
-          </aside>
-
-          <main className="center">
-            <div className="boardTop">
-              <div className="hintBar">
-                <div className="hintLabel">Current clue</div>
-                <div className="hintValue">???? • 2</div>
-              </div>
-
-              <div className={`turnChip ${currentTeam === 'blue' ? 'blueTurn' : 'redTurn'} ${isTurnPulseOn ? 'turnPulse' : ''}`}>
-                Turn <span className={`turnBadge ${currentTeam === 'red' ? 'red' : ''}`}>{activeTurnLabel}</span>
-              </div>
-            </div>
-
-            <section className="grid" aria-label="5x5 grid">
-              {cards.map((c, idx) => {
-                const isRevealed = revealed.has(idx)
-                return (
-                  <button
-                    key={`${c.img}-${idx}`}
-                    type="button"
-                    className={`card ${pendingReveals.has(idx) ? 'isPendingReveal' : ''} ${isRevealed ? 'isRevealed' : 'isHiddenCard'} ${revealFxByCard[idx] ? `fx-${revealFxByCard[idx]}` : ''} ${revealResultByCard[idx] ? `revealed-${revealResultByCard[idx]}` : ''}`.trim()}
-                    onClick={() => handleReveal(idx)}
-                    disabled={gameOver || hasPendingReveal}
-                    aria-label={`Reveal card ${idx + 1}`}
-                  >
-                    <div className="cardInner">
-                      <div className="cardFace cardFront">
-                        <div className="cardImg" style={{ backgroundImage: `url('/assets/cards/${c.img}.jpg')` }}></div>
-                        <div className="cardTxt">{c.txt}</div>
-                      </div>
-
-                      <div className={`cardFace cardBack ${c.cls}`}>
-                        <div className="cardImg" style={{ backgroundImage: `url('/assets/cards/${c.img}.jpg')` }}></div>
-                        <div className="cardTxt">{c.txt}</div>
-                        {c.assassin ? (
-                          <div className="assassinMark" aria-hidden="true">
-                            ?
-                          </div>
-                        ) : null}
-                        {isRevealed && revealResultByCard[idx] === 'wrong' ? (
-                          <div className="wrongMark" aria-hidden="true">
-                            Wrong
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-            </section>
-
-            <div className="bottomBar">
-              <button className="bigBtn endTurn" type="button" onClick={endTurn} disabled={gameOver || hasPendingReveal}>
-                {gameOver ? `${winner.toUpperCase()} Wins` : 'End Turn'}
-              </button>
-
-              <div className="clueDock bottomClueDock" aria-label="Clue input">
-                <div className="clueTag">CLUE</div>
-                <input className="clueInput" defaultValue="????" aria-label="Clue word" />
-                <div className="clueTag">#</div>
-                <input className="numInput" defaultValue="2" aria-label="Clue number" />
-                <button className="sendBtn" type="button">
-                  Send
+        <div style={{ display: 'grid', gap: 12 }}>
+          {canGiveClue && (
+            <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
+              <div style={{ fontWeight: 900, marginBottom: 10 }}>Give clue</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input
+                  value={clueWord}
+                  onChange={(e) => setClueWord(e.target.value)}
+                  placeholder="word"
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    border: '1px solid #2a2a35',
+                    background: '#0d0d14',
+                    color: '#fff',
+                    minWidth: 180
+                  }}
+                />
+                <input
+                  type="number"
+                  value={clueNumber}
+                  onChange={(e) => setClueNumber(Number(e.target.value))}
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    border: '1px solid #2a2a35',
+                    background: '#0d0d14',
+                    color: '#fff',
+                    width: 120
+                  }}
+                />
+                <button onClick={doSendClue} disabled={busy !== null || clueWord.trim().length === 0}>
+                  Set clue
                 </button>
               </div>
             </div>
-          </main>
+          )}
 
-          <aside className={`side red ${currentTeam === 'red' ? 'isActiveTurn' : ''}`}>
-            <div className="roleCard">
-              <div className="roleHead redStrip">
-                <div className="roleTitle">Team Red</div>
-                <div className="teamPill red">{redRemaining} left</div>
-              </div>
-
-              <div className="userRow">
-                <div className="namer">
-                  <div className="avatar">
-                    <img src="/assets/avatars/red-operative.png" alt="Red Player" />
-                  </div>
-                  <div className="userMeta">
-                    <div className="userName">Acrab</div>
-                    <div className="userSub">Guessers</div>
-                  </div>
-                </div>
-                <div className="namer">
-                  <div className="avatar">
-                    <img src="/assets/avatars/red-spymaster.jpg" alt="Red Spymaster" />
-                  </div>
-                  <div className="userMeta">
-                    <div className="userName">Wadhah</div>
-                    <div className="userSub">Gives clue</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="miniInfo">
-                <div className="miniLine">
-                  <span className="miniLabel">Turn</span>
-                  <span className={`turnPill ${currentTeam === 'red' ? 'red' : ''}`}>{currentTeam === 'red' ? 'RED' : 'WAIT'}</span>
-                </div>
-
-                <div className="miniLine">
-                  <span className="miniLabel">Guesses left</span>
-                  <span className="miniValue">—</span>
-                </div>
-              </div>
+          {!me?.isSpymaster && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button onClick={doEndTurn} disabled={!canEndTurn || busy !== null}>
+                End turn
+              </button>
+              {!canReveal && isActive && <div style={{ opacity: 0.8 }}>You can reveal only on your turn, after a clue.</div>}
             </div>
+          )}
 
-            <div className="roleCard">
-              <div className="roleHead">
-                <div className="roleTitle">Spymaster</div>
-                <div className="teamPill">Hint</div>
-              </div>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${boardSize}, minmax(0, 1fr))`, gap: 8 }}>
+            {state.cards.map((c) => {
+              const hint = state.showKey ? state.keyByPos.get(c.pos) : undefined
+              const hintText = hint ? keyLetter(hint) : ''
 
-              <div className="userRow">
-                <div className="namer">
-                  <div className="avatar">
-                    <img src="/assets/avatars/red-spymaster.jpg" alt="Red Spymaster" />
+              return (
+                <button
+                  key={c.pos}
+                  onClick={() => doReveal(c)}
+                  disabled={busy !== null || !isActive || c.revealed || !canReveal}
+                  style={{
+                    position: 'relative',
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid #1f1f29',
+                    background: '#111118',
+                    color: '#fff',
+                    textAlign: 'left',
+                    minHeight: 62,
+                    opacity: c.revealed ? 0.65 : 1,
+                    cursor: c.revealed || !canReveal ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  {hintText && !c.revealed && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 8,
+                        right: 8,
+                        fontSize: 12,
+                        opacity: 0.85,
+                        fontFamily: 'monospace',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        padding: '2px 6px',
+                        borderRadius: 8
+                      }}
+                    >
+                      {hintText}
+                    </div>
+                  )}
+
+                  <div style={{ fontWeight: 900 }}>{c.word}</div>
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
+                    {c.revealed ? (
+                      <>
+                        revealed • <b>{c.revealed_color ?? '—'}</b>
+                      </>
+                    ) : (
+                      <>hidden</>
+                    )}
                   </div>
-                  <div className="userMeta">
-                    <div className="userName">Wadhah</div>
-                    <div className="userSub">Gives clue</div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Blue Team</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {blueTeam.map((m, idx) => (
+              <div
+                key={m.user_id}
+                style={{
+                  padding: 10,
+                  borderRadius: 10,
+                  border: '1px solid #1f1f29',
+                  background: '#0d0d14',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 10
+                }}
+              >
+                <div style={{ overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>
+                    {m.is_spymaster ? 'spymaster' : 'operative'}
+                    {m.is_ready ? ' • ready' : ''}
                   </div>
                 </div>
               </div>
+            ))}
+            {blueTeam.length === 0 && <div style={{ opacity: 0.75 }}>no players</div>}
+          </div>
 
-              <div className="hintReadout">
-                <div className="hintLabel">Current clue</div>
-                <div className="hintValue">—</div>
-              </div>
-            </div>
-
-            <div className="roleCard">
-              <div className="roleHead redStrip">
-                <div className="roleTitle">Powers</div>
-                <div className="teamPill red">Once/Unlock</div>
-              </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Streak</div>
-                  <div className="powerNote">Unlock dice at 4 correct links</div>
-                </div>
-
-                <div className="streakRow" aria-label="Streak meter">
-                  <div className="streakLabel">0 / 4</div>
-                  <div className="streakDots">
-                    <span className="dot"></span>
-                    <span className="dot"></span>
-                    <span className="dot"></span>
-                    <span className="dot"></span>
+          {spectators.length > 0 && (
+            <>
+              <div style={{ marginTop: 14, fontWeight: 900, opacity: 0.95 }}>Spectators</div>
+              <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+                {spectators.map((m, idx) => (
+                  <div key={m.user_id} style={{ opacity: 0.85, fontSize: 13 }}>
+                    {displayNameFor(m, idx)}
                   </div>
-                </div>
+                ))}
               </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Dice</div>
-                  <div className="powerNote">
-                    <span className="lockedText">Locked until streak</span>
-                  </div>
-                </div>
-
-                <div className="diceRow">
-                  <button className="powerBtn powerBtnPurple" type="button" disabled>
-                    <span className="btnIco">
-                      <img src="/assets/icons/dice.svg" alt="" />
-                    </span>
-                    Roll Dice
-                  </button>
-                  <div className="diceHint">Unlocked only after streak</div>
-                </div>
-              </div>
-
-              <div className="powerBlock">
-                <div className="powerHeader">
-                  <div className="powerName">Helper Actions</div>
-                  <div className="powerNote">Each once per game</div>
-                </div>
-
-                <div className="helperGrid">
-                  <button className="helperBtn helperBtnDim" type="button" disabled>
-                    <span className="btnIco">
-                      <img src="/assets/icons/time.svg" alt="" />
-                    </span>
-                    Time Cut
-                    <span className="helperSub">Half enemy timer</span>
-                  </button>
-
-                  <button className="helperBtn helperBtnDim" type="button" disabled>
-                    <span className="btnIco">
-                      <img src="/assets/icons/peek.svg" alt="" />
-                    </span>
-                    Random Peek
-                    <span className="helperSub">Private reveal</span>
-                  </button>
-
-                  <button className="helperBtn helperBtnDim" type="button" disabled>
-                    <span className="btnIco">
-                      <img src="/assets/icons/shuffle.svg" alt="" />
-                    </span>
-                    Shuffle
-                    <span className="helperSub">Shuffle unrevealed</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </aside>
+            </>
+          )}
         </div>
       </div>
+
+      {(isSetup || isEnded) && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            background: 'rgba(0,0,0,0.72)',
+            display: 'grid',
+            placeItems: 'center',
+            padding: 16
+          }}
+        >
+          <div style={{ width: '100%', maxWidth: 560, borderRadius: 14, border: '1px solid #2a2a35', background: '#111118', padding: 16 }}>
+            <div style={{ fontWeight: 900, fontSize: 20 }}>
+              {isSetup ? 'Waiting to start' : winnerText((game as any)?.winning_team)}
+            </div>
+
+            <div style={{ marginTop: 10, opacity: 0.85, lineHeight: 1.4 }}>
+              {isSetup
+                ? 'This game is not active yet. Go back to the lobby to start it.'
+                : 'The game has ended. You can return to the lobby or open the classic screen.'}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+              <button onClick={onBackToLobby}>Back to lobby</button>
+              <button onClick={onBackToHome}>Open classic</button>
+              <button onClick={() => actions.refresh()}>Refresh</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {busy && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'grid',
+            placeItems: 'center',
+            color: '#fff',
+            zIndex: 9999
+          }}
+        >
+          <div style={{ padding: 16, borderRadius: 12, border: '1px solid #2a2a35', background: '#111118' }}>{busy}</div>
+        </div>
+      )}
     </div>
   )
 }
