@@ -130,7 +130,9 @@ function RouteSyncGuard() {
     setCtx({ lobbyId, lobbyCode, lobbyStatus, latestGameId })
   }
 
-  useEffect(() => {
+    useEffect(() => {
+    let cancelled = false
+
     async function start() {
       try {
         const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
@@ -140,6 +142,7 @@ function RouteSyncGuard() {
         if (!uid) return
 
         await refreshCtx()
+        if (cancelled) return
 
         memberChannelRef.current = supabase
           .channel(`sync:member:${uid}`)
@@ -148,17 +151,22 @@ function RouteSyncGuard() {
           })
           .subscribe()
 
+        if (cancelled) return
+
+        // poll is just a fallback; keep it slower
         pollRef.current = window.setInterval(async () => {
           await refreshCtx()
-        }, 3000)
+        }, 8000)
       } catch (err) {
-        console.error('[sync] init failed:', err)
+        if (!cancelled) console.error('[sync] init failed:', err)
       }
     }
 
     void start()
 
     return () => {
+      cancelled = true
+
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current)
         pollRef.current = null
@@ -174,6 +182,7 @@ function RouteSyncGuard() {
       subscribedLobbyIdRef.current = null
     }
   }, [])
+
 
   useEffect(() => {
     const lobbyId = ctx?.lobbyId ?? null
@@ -197,8 +206,12 @@ function RouteSyncGuard() {
       .subscribe()
   }, [ctx?.lobbyId])
 
-  useEffect(() => {
+    useEffect(() => {
     if (!ctx) return
+
+    // If the user navigates to a game route while the lobby is still marked open
+    // (common right after the owner starts the game), don't force-redirect back to the lobby.
+    if ((location.pathname.startsWith('/game/') || location.pathname.startsWith('/game-ui/')) && ctx.lobbyStatus === 'open') return
 
     let target = ''
     if (ctx.lobbyStatus === 'closed') target = '/'
@@ -206,6 +219,11 @@ function RouteSyncGuard() {
     else if (ctx.lobbyStatus === 'in_game' && ctx.latestGameId) target = `/game/${ctx.latestGameId}`
     if (!target) return
 
+
+    // don't force-redirect while user is in profile/settings screens
+    if (location.pathname.startsWith('/profile') || location.pathname.startsWith('/settings')) return
+    // allow manual navigation to Home without being pulled back into lobby/game
+    if (location.pathname === '/') return
     if (location.pathname === target) return
     const sig = `${ctx.lobbyStatus}|${ctx.lobbyCode}|${ctx.latestGameId ?? ''}|${target}`
     if (navSigRef.current === sig) return

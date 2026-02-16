@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import {
@@ -17,6 +17,7 @@ import { restartLobby, stopPlaying } from '../lib/lobbyActions'
 import { useDiceOption, useHelperAction, type DiceOption, type HelperAction } from '../lib/powers'
 import { getLobbyById, joinLobby, joinLobbyAsSpectator } from '../lib/lobbies'
 import { getLobbyProfiles } from '../lib/publicProfiles'
+import { recordFinishedGameStats } from '../lib/playerStats'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -32,6 +33,7 @@ type LobbyMemberLite = {
 type CenterNoticeTone = 'info' | 'turn' | 'win'
 type HintGuess = { word: string; correct: boolean }
 type HintTrack = { id: string; clue: string; number: number; words: HintGuess[] }
+type ProfileView = { displayName: string; avatarUrl: string }
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -67,11 +69,6 @@ function formatMMSS(totalSeconds: number): string {
   return `${mm}:${ss.toString().padStart(2, '0')}`
 }
 
-function shortId(id: string): string {
-  if (!id) return 'â€”'
-  return `${id.slice(0, 4)}â€¦${id.slice(-4)}`
-}
-
 function displayNameOrFallback(name: string | undefined, fallback: string): string {
   const clean = String(name ?? '').trim()
   return clean || fallback
@@ -80,7 +77,7 @@ function displayNameOrFallback(name: string | undefined, fallback: string): stri
 function teamLabel(t: 'red' | 'blue' | null): string {
   if (t === 'red') return 'Red'
   if (t === 'blue') return 'Blue'
-  return 'â€”'
+  return '—'
 }
 
 function clearLastLobbyMemory() {
@@ -92,19 +89,25 @@ function clearLastLobbyMemory() {
   }
 }
 
-async function findLatestOpenLobbyCodeByOwner(ownerId: string, excludeLobbyId: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('lobbies')
-    .select('id,code,status,created_at')
-    .eq('owner_id', ownerId)
-    .eq('status', 'open')
-    .order('created_at', { ascending: false })
-    .limit(5)
+const AVATAR_POOL = {
+  red: ['/assets/avatars/red-avatar/red-avatar.png', '/assets/avatars/red-avatar/red-avatar2.png', '/assets/avatars/red-avatar/red-avatar3.jpg'],
+  blue: ['/assets/avatars/blue-avatar/blue-avatar.png', '/assets/avatars/blue-avatar/blue-avatar2.png', '/assets/avatars/blue-avatar/blue-avatar3.png'],
+  neutral: ['/assets/gameavatar.png']
+} as const
 
-  if (error) throw error
-  const rows = (data ?? []) as Array<{ id: string; code: string; status: string; created_at: string }>
-  const row = rows.find((r) => r.id !== excludeLobbyId) ?? null
-  return row?.code?.trim()?.toUpperCase() ?? null
+function hashSeed(input: string): number {
+  let h = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+function fallbackAvatarFor(team: 'red' | 'blue' | null, seed: string): string {
+  const bucket = team === 'red' ? AVATAR_POOL.red : team === 'blue' ? AVATAR_POOL.blue : AVATAR_POOL.neutral
+  const idx = hashSeed(seed) % bucket.length
+  return bucket[idx]
 }
 
 type PeekRow = { pos: number; color: string; at?: string }
@@ -149,6 +152,9 @@ export default function GameRoute() {
 
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
+  const [realtimeStatus, setRealtimeStatus] = useState<
+    'CONNECTING' | 'SUBSCRIBED' | 'TIMED_OUT' | 'CLOSED' | 'CHANNEL_ERROR'
+  >('CONNECTING')
 
   const [game, setGame] = useState<Game | null>(null)
   const [cards, setCards] = useState<GameCard[]>([])
@@ -169,58 +175,145 @@ export default function GameRoute() {
   }, [keyRows])
 
   const [members, setMembers] = useState<LobbyMemberLite[]>([])
+  const membersRef = useRef<LobbyMemberLite[]>([])
+
+
+  useEffect(() => {
+    membersRef.current = members
+  }, [members])
+
+  const myUserIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    myUserIdRef.current = myUserId
+  }, [myUserId])
+
+  const [profileByUserId, setProfileByUserId] = useState<Record<string, ProfileView>>({})
   const [profileNameByUserId, setProfileNameByUserId] = useState<Record<string, string>>({})
+
   const [revealFxByPos, setRevealFxByPos] = useState<Record<number, 'correct' | 'incorrect' | 'assassin'>>({})
   const [pendingRevealPos, setPendingRevealPos] = useState<number | null>(null)
   const [centerNotice, setCenterNotice] = useState<{ id: number; text: string; tone: CenterNoticeTone } | null>(null)
-  const [remainingBase, setRemainingBase] = useState<{ red: number; blue: number } | null>(null)
   const [teamHintLog, setTeamHintLog] = useState<{ red: HintTrack[]; blue: HintTrack[] }>({ red: [], blue: [] })
+const hintHydratedRef = useRef(false)
+
+// hint trail persistence (so refresh keeps history)
+useEffect(() => {
+  if (!gameId) return
+  if (hintHydratedRef.current) return
+  hintHydratedRef.current = true
+  try {
+    const raw = localStorage.getItem(`oneclue_hint_log:${gameId}`)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as any
+    if (parsed && typeof parsed === 'object' && parsed.red && parsed.blue) {
+      setTeamHintLog({
+        red: Array.isArray(parsed.red) ? (parsed.red as HintTrack[]) : [],
+        blue: Array.isArray(parsed.blue) ? (parsed.blue as HintTrack[]) : []
+      })
+    }
+  } catch {
+    // ignore
+  }
+}, [gameId])
+
+useEffect(() => {
+  if (!gameId) return
+  try {
+    localStorage.setItem(`oneclue_hint_log:${gameId}`, JSON.stringify(teamHintLog))
+  } catch {
+    // ignore
+  }
+}, [gameId, teamHintLog])
+
   const [roundCorrectStreak, setRoundCorrectStreak] = useState(0)
   const [rolledDiceOption, setRolledDiceOption] = useState<DiceOption | null>(null)
   const [peekFlash, setPeekFlash] = useState<{ pos: number; color: string } | null>(null)
   const [showWinTrail, setShowWinTrail] = useState(false)
+  const [lobbyCode, setLobbyCode] = useState<string>('')
+  const [showRules, setShowRules] = useState(false)
   const prevRevealedRef = useRef<Map<number, boolean>>(new Map())
   const fxTimeoutsRef = useRef<number[]>([])
   const suspenseTimeoutRef = useRef<number | null>(null)
   const noticeTimeoutRef = useRef<number | null>(null)
   const peekFlashTimeoutRef = useRef<number | null>(null)
   const prevGameRef = useRef<Game | null>(null)
+  const statsRecordedGameIdsRef = useRef<Set<string>>(new Set())
   const prevForcedWinnerRef = useRef<'red' | 'blue' | null>(null)
   const autoEndTurnRef = useRef<{ sig: string; inFlight: boolean }>({ sig: '', inFlight: false })
   const guessesTransitionRef = useRef<{ turnSig: string; prev: number | null }>({ turnSig: '', prev: null })
-  const didAutoRedirectRef = useRef(false)
 
-  // timer (client-only)
-  const TURN_SECONDS = 180
-  const [turnLeft, setTurnLeft] = useState<number>(TURN_SECONDS)
-  const lastTurnSigRef = useRef<string>('')
-  const timeCutAppliedRef = useRef<boolean>(false)
+  // timer (persisted if `games.turn_started_at` exists)
+const TURN_SECONDS = 180
 
-  async function refreshMembers(lobbyId: string) {
-    const { data, error } = await supabase
-      .from('lobby_members')
-      .select('user_id,team,is_spymaster,role,is_ready,last_seen_at')
-      .eq('lobby_id', lobbyId)
-      .order('joined_at', { ascending: true })
+function getTurnTotalSeconds(g: Game | null): number {
+  if (!g) return TURN_SECONDS
+  const st: any = g.state
+  // If time_cut_mode is "half" for the current team, make the whole turn half duration (refresh-safe).
+  if (timeCutHalfAppliesNow(st, g.current_turn_team)) return Math.max(10, Math.floor(TURN_SECONDS / 2))
+  return TURN_SECONDS
+}
 
-    if (!error) setMembers((data ?? []) as LobbyMemberLite[])
+function getTurnStartedAt(g: Game | null): string | null {
+  if (!g) return null
+  const anyG: any = g as any
+  const direct = typeof anyG.turn_started_at === 'string' ? anyG.turn_started_at : null
+  const inState = typeof (g.state as any)?.turn_started_at === 'string' ? ((g.state as any).turn_started_at as string) : null
+  return direct ?? inState ?? null
+}
 
-    try {
-      const profs = await getLobbyProfiles(lobbyId)
-      const map: Record<string, string> = {}
-      for (const p of profs) {
-        const uid = String(p.user_id ?? '').trim()
-        const n = String(p.display_name ?? '').trim()
-        if (uid && n) map[uid] = n
-      }
-      setProfileNameByUserId(map)
-    } catch (err) {
-      console.warn('[game] get_lobby_profiles failed, using fallback names:', err)
-      setProfileNameByUserId({})
-    }
+function computeTurnLeftFromGame(g: Game | null): number {
+  const total = getTurnTotalSeconds(g)
+  const started = getTurnStartedAt(g)
+  if (!started) return total
+  const ms = Date.parse(started)
+  if (!Number.isFinite(ms)) return total
+  const elapsed = Math.floor((Date.now() - ms) / 1000)
+  return clampInt(total - elapsed, 0, total)
+}
+
+const [turnLeft, setTurnLeft] = useState<number>(TURN_SECONDS)
+const lastTurnSigRef = useRef<string>('')
+
+
+    async function refreshMembers(lobbyId: string, loadProfiles: boolean) {
+  const { data, error } = await supabase
+    .from('lobby_members')
+    .select('user_id,team,is_spymaster,role,is_ready,joined_at,last_seen_at')
+    .eq('lobby_id', lobbyId)
+    .order('joined_at', { ascending: true })
+
+  if (error) {
+    console.warn('[game] refreshMembers failed:', error)
+    return
   }
 
-  const amOwner = useMemo(() => {
+  const base = ((data ?? []) as any[]) as LobbyMemberLite[]
+  setMembers(base)
+
+  if (!loadProfiles) return
+
+  try {
+    const profs = await getLobbyProfiles(lobbyId)
+    const map: Record<string, ProfileView> = {}
+    const nameMap: Record<string, string> = {}
+      for (const p of profs ?? []) {
+        const uid = String((p as any).user_id ?? '').trim()
+        const n = String((p as any).display_name ?? '').trim()
+        const avatarUrl = String((p as any).avatar_url ?? '').trim()
+        if (uid) {
+          map[uid] = { displayName: n, avatarUrl }
+          if (n) nameMap[uid] = n
+        }
+      }
+      setProfileByUserId(map)
+      setProfileNameByUserId(nameMap)
+  } catch (err) {
+    console.warn('[game] get_lobby_profiles failed; keeping cached names:', err)
+    // keep old cache
+  }
+}
+
+const amOwner = useMemo(() => {
     if (!myUserId) return false
     return members.some((m) => m.user_id === myUserId && m.role === 'owner')
   }, [members, myUserId])
@@ -276,7 +369,8 @@ export default function GameRoute() {
 
         if (lmErr) throw lmErr
 
-        await refreshMembers(g.lobby_id)
+        await refreshMembers(g.lobby_id, true)
+
 
         if (cancelled) return
         setGame(g)
@@ -293,17 +387,12 @@ export default function GameRoute() {
           setState('error')
         }
       }
-    })()
+    })() 
 
     return () => {
       cancelled = true
     }
   }, [gameId])
-
-  useEffect(() => {
-    setRemainingBase(null)
-  }, [gameId])
-
   useEffect(() => {
     return () => {
       fxTimeoutsRef.current.forEach((t) => window.clearTimeout(t))
@@ -322,15 +411,51 @@ export default function GameRoute() {
       }
     }
   }, [])
+    useEffect(() => {
+    if (!gameId) return
+    if (!game?.lobby_id) return
+    if (realtimeStatus === 'SUBSCRIBED') return
+
+    let cancelled = false
+    const lobbyId = game.lobby_id
+
+    const tick = async () => {
+      try {
+        const [g, c] = await Promise.all([loadGame(gameId), loadGameCards(gameId)])
+        if (cancelled) return
+        setGame(g)
+        setCards(c)
+        setClueWord(g.clue_word ?? '')
+        setClueNumber(g.clue_number ?? 1)
+      } catch (err) {
+        // keep quiet: polling is just a fallback
+        console.warn('[game] poll fallback failed:', err)
+      }
+    }
+
+    void tick()
+    const t = window.setInterval(tick, 2000)
+
+    // members fallback (lighter, no profiles)
+    const m = window.setInterval(() => {
+      void refreshMembers(lobbyId, false)
+    }, 10_000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+      window.clearInterval(m)
+    }
+  }, [gameId, game?.lobby_id, realtimeStatus])
 
   useEffect(() => {
     if (!gameId) return
     if (!game?.lobby_id) return
 
     const lobbyId = game.lobby_id
-
+    setRealtimeStatus('CONNECTING')
     const channel = supabase
-      .channel(`lobby:${lobbyId}`, { config: { private: true } })
+      .channel(`lobby:${lobbyId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` }, async () => {
         const g = await loadGame(gameId)
         setGame(g)
@@ -344,61 +469,45 @@ export default function GameRoute() {
         setClueWord(g.clue_word ?? '')
         setClueNumber(g.clue_number ?? 1)
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobbyId}` }, async () => {
-        await refreshMembers(lobbyId)
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lobbies', filter: `id=eq.${lobbyId}` }, async () => {
-        try {
-          const updatedLobby = await getLobbyById(lobbyId)
-          if (didAutoRedirectRef.current) return
-
-          const myRole = members.find((m) => m.user_id === myUserId)?.role ?? 'player'
-          const goToNewestOpenLobby = async () => {
-            const newCode = await findLatestOpenLobbyCodeByOwner(updatedLobby.owner_id, lobbyId)
-            if (!newCode) return false
-            if (myRole === 'spectator') {
-              await joinLobbyAsSpectator(newCode)
-              didAutoRedirectRef.current = true
-              showCenterNotice('Lobby Restarted', 'info', 1800)
-              window.setTimeout(() => navigate(`/lobby/${newCode}?spectate=1`, { replace: true }), 250)
-              return true
+            .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobbyId}` },
+        async (payload) => {
+          // ignore heartbeat-only updates (last_seen_at)
+          if (payload.eventType === 'UPDATE') {
+            const n = payload.new as any
+            const o = payload.old as any
+            if (
+              n &&
+              o &&
+              n.user_id === o.user_id &&
+              n.team === o.team &&
+              n.role === o.role &&
+              n.is_spymaster === o.is_spymaster &&
+              n.is_ready === o.is_ready &&
+              n.joined_at === o.joined_at &&
+              n.last_seen_at !== o.last_seen_at
+            ) {
+              setMembers((prev) =>
+                prev.map((m) => (m.user_id === n.user_id ? { ...m, last_seen_at: n.last_seen_at } : m))
+              )
+              return
             }
-            await joinLobby(newCode)
-            didAutoRedirectRef.current = true
-            showCenterNotice('Lobby Restarted', 'info', 1800)
-            window.setTimeout(() => navigate(`/lobby/${newCode}`, { replace: true }), 250)
-            return true
           }
 
-          if (updatedLobby.status === 'closed') {
-            const moved = await goToNewestOpenLobby()
-            if (!moved) {
-              didAutoRedirectRef.current = true
-              showCenterNotice('Lobby Closed', 'info', 1800)
-              window.setTimeout(() => navigate('/', { replace: true }), 250)
-            }
-            return
-          }
-
-          if (updatedLobby.status === 'open') {
-            const moved = await goToNewestOpenLobby()
-            if (!moved) {
-              didAutoRedirectRef.current = true
-              showCenterNotice('Lobby Open', 'info', 1600)
-              window.setTimeout(() => navigate(`/lobby/${updatedLobby.code}`, { replace: true }), 250)
-            }
-            return
-          }
-        } catch (err) {
-          console.error('[game] lobby status refresh failed:', err)
+          // full refresh for real membership changes
+          await refreshMembers(lobbyId, payload.eventType === 'INSERT' || payload.eventType === 'DELETE')
         }
-      })
-      .subscribe()
+      )
 
+
+            .subscribe((status) => {
+        setRealtimeStatus(status as any)
+      })
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [gameId, game?.lobby_id, members, myUserId, navigate])
+  }, [gameId, game?.lobby_id, navigate])
 
   useEffect(() => {
     if (!cards.length) return
@@ -471,15 +580,7 @@ export default function GameRoute() {
     }
   }, [cards, myTeam, game?.current_turn_team, game?.clue_word, game?.clue_number, memberTeamById])
 
-  useEffect(() => {
-    if (!game) return
-    if (remainingBase) return
-
-    // Infer stable totals so counters can still move from card reveals even if game remaining fields lag.
-    const inferredRed = clampInt((game.red_remaining ?? 0) + revealedCounts.red, 0, 99)
-    const inferredBlue = clampInt((game.blue_remaining ?? 0) + revealedCounts.blue, 0, 99)
-    setRemainingBase({ red: inferredRed, blue: inferredBlue })
-  }, [game, remainingBase, revealedCounts.red, revealedCounts.blue])
+  
 
   function showCenterNotice(text: string, tone: CenterNoticeTone = 'info', ms = 1700) {
     if (noticeTimeoutRef.current !== null) {
@@ -537,6 +638,41 @@ export default function GameRoute() {
   }, [game])
 
   useEffect(() => {
+    const g = game
+    if (!g) return
+
+    // Some backends may not immediately mark the game as finished.
+    // We treat "0 remaining" as a win signal as a fallback so stats still record.
+    const blueNow = clampInt(g.blue_remaining ?? 0, 0, 99)
+    const redNow = clampInt(g.red_remaining ?? 0, 0, 99)
+    const winnerFromRemaining: 'red' | 'blue' | null = blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null
+
+    const winner: 'red' | 'blue' | null = (g.winning_team as any) ?? winnerFromRemaining
+    if (!winner) return
+
+    if (!myUserId || !myTeam) return
+    if (!gameId) return
+    if (statsRecordedGameIdsRef.current.has(gameId)) return
+    statsRecordedGameIdsRef.current.add(gameId)
+
+    ;(async () => {
+      try {
+        await recordFinishedGameStats({
+          gameId,
+          winnerTeam: winner,
+          myUserId,
+          myTeam,
+          members,
+          profileNameByUserId
+        })
+      } catch (err) {
+        // keep gameplay flow intact even if stats persist fails
+        console.warn('[game] stats update failed:', err)
+      }
+    })()
+  }, [game, gameId, myUserId, myTeam, members, profileNameByUserId])
+
+  useEffect(() => {
     if (!game?.clue_word || !game.current_turn_team) return
     const clue = game.clue_word.trim()
     if (!clue) return
@@ -553,8 +689,8 @@ export default function GameRoute() {
 
   useEffect(() => {
     if (!game) return
-    const blueNow = clampInt((remainingBase?.blue ?? ((game.blue_remaining ?? 0) + revealedCounts.blue)) - revealedCounts.blue, 0, 99)
-    const redNow = clampInt((remainingBase?.red ?? ((game.red_remaining ?? 0) + revealedCounts.red)) - revealedCounts.red, 0, 99)
+    const blueNow = clampInt(game.blue_remaining ?? 0, 0, 99)
+    const redNow = clampInt(game.red_remaining ?? 0, 0, 99)
     const winner: 'red' | 'blue' | null = blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null
 
     if (!winner) {
@@ -564,7 +700,7 @@ export default function GameRoute() {
     if (prevForcedWinnerRef.current === winner) return
     prevForcedWinnerRef.current = winner
     showCenterNotice(`${teamLabel(winner)} Team Wins`, 'win', 2600)
-  }, [game, remainingBase, revealedCounts.blue, revealedCounts.red])
+  }, [game])
 
   useEffect(() => {
     let cancelled = false
@@ -576,7 +712,7 @@ export default function GameRoute() {
         if (!cancelled) setKeyRows(rows)
       } catch (err) {
         console.error('[game] key load failed:', err)
-        if (!cancelled) alert(supaErr(err))
+        if (!cancelled) showCenterNotice(supaErr(err), 'info', 2600)
       }
     })()
 
@@ -591,34 +727,36 @@ export default function GameRoute() {
     const sig = `${game.current_turn_team ?? 'x'}|${game.clue_word ?? ''}|${game.clue_number ?? ''}|${(game.state as any)?.turn_no ?? ''}`
     if (sig !== lastTurnSigRef.current) {
       lastTurnSigRef.current = sig
-      setTurnLeft(TURN_SECONDS)
-      timeCutAppliedRef.current = false
+      setTurnLeft(computeTurnLeftFromGame(game))
       setRoundCorrectStreak(0)
       setRolledDiceOption(null)
     }
   }, [game?.current_turn_team, game?.clue_word, game?.clue_number, game?.state])
 
-  // ticking timer
-  useEffect(() => {
-    if (state !== 'ready') return
-    if (!game) return
-    const blueNow = clampInt((remainingBase?.blue ?? ((game.blue_remaining ?? 0) + revealedCounts.blue)) - revealedCounts.blue, 0, 99)
-    const redNow = clampInt((remainingBase?.red ?? ((game.red_remaining ?? 0) + revealedCounts.red)) - revealedCounts.red, 0, 99)
-    const winner: 'red' | 'blue' | null = game.winning_team ?? (blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null)
-    const localStatus = game.status === 'active' && winner ? 'finished' : game.status
-    if (localStatus !== 'active') return
+  // ticking timer (recomputes from persisted turn start time when available)
+useEffect(() => {
+  if (state !== 'ready') return
+  if (!game) return
 
-    const id = window.setInterval(() => setTurnLeft((prev) => Math.max(0, prev - 1)), 1000)
-    return () => window.clearInterval(id)
-  }, [state, game, remainingBase, revealedCounts.blue, revealedCounts.red])
+  const blueNow = clampInt(game.blue_remaining ?? 0, 0, 99)
+  const redNow = clampInt(game.red_remaining ?? 0, 0, 99)
+  const winner: 'red' | 'blue' | null = game.winning_team ?? (blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null)
+  const localStatus = game.status === 'active' && winner ? 'finished' : game.status
+  if (localStatus !== 'active') return
 
-  // auto-change turn when timer reaches 0
+  // snap immediately, then tick
+  setTurnLeft(computeTurnLeftFromGame(game))
+  const id = window.setInterval(() => setTurnLeft(computeTurnLeftFromGame(game)), 1000)
+  return () => window.clearInterval(id)
+}, [state, game])
+
+// auto-change turn when timer reaches 0
   useEffect(() => {
     if (!gameId || !game) return
     if (turnLeft > 0) return
     if (game.status !== 'active') return
-    const blueNow = clampInt((remainingBase?.blue ?? ((game.blue_remaining ?? 0) + revealedCounts.blue)) - revealedCounts.blue, 0, 99)
-    const redNow = clampInt((remainingBase?.red ?? ((game.red_remaining ?? 0) + revealedCounts.red)) - revealedCounts.red, 0, 99)
+    const blueNow = clampInt(game.blue_remaining ?? 0, 0, 99)
+    const redNow = clampInt(game.red_remaining ?? 0, 0, 99)
     const winner: 'red' | 'blue' | null = game.winning_team ?? (blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null)
     if (winner) return
 
@@ -638,7 +776,7 @@ export default function GameRoute() {
         autoEndTurnRef.current.inFlight = false
       }
     })()
-  }, [gameId, game, turnLeft, remainingBase, revealedCounts.blue, revealedCounts.red])
+  }, [gameId, game, turnLeft])
 
   // auto-change turn when guesses are exhausted
   useEffect(() => {
@@ -667,72 +805,105 @@ export default function GameRoute() {
     ;(async () => {
       try {
         await endTurn(gameId)
+
+        // pull fresh game state so UI flips immediately even if realtime misses it
+        const g2 = await loadGame(gameId)
+        setGame(g2)
+        setClueWord(g2.clue_word ?? '')
+        setClueNumber(g2.clue_number ?? 1)
       } catch (err) {
-        console.warn('[game] guesses auto end_turn skipped:', err)
+        console.warn('[game] guesses auto end_turn failed:', err)
+        showCenterNotice(supaErr(err), 'info', 2600)
       } finally {
         autoEndTurnRef.current.inFlight = false
       }
     })()
   }, [gameId, game])
 
-  // apply time cut (half) once at start of the target teamâ€™s turn
-  useEffect(() => {
-    if (!game) return
-    if (!game.current_turn_team) return
 
-    const st: any = game.state
-    if (!timeCutAppliedRef.current && timeCutHalfAppliesNow(st, game.current_turn_team)) {
-      timeCutAppliedRef.current = true
-      setTurnLeft((prev) => Math.max(0, Math.floor(prev / 2)))
-    }
-  }, [game?.state, game?.current_turn_team])
 
-  async function handleReveal(pos: number) {
+async function handleReveal(pos: number) {
     if (!gameId) return
     if (!isGameActive) return
     if (pillCount <= 0) return
     if (pendingRevealPos !== null || busy !== null) return
+
     try {
       setPendingRevealPos(pos)
+
+      // tiny delay keeps the UI feel responsive (also prevents accidental double taps)
       await new Promise<void>((resolve) => {
         suspenseTimeoutRef.current = window.setTimeout(() => {
           suspenseTimeoutRef.current = null
           resolve()
         }, 500)
       })
+
       const res = await revealCard(gameId, pos)
+      const nextGuesses =
+        res.guesses_remaining === null || res.guesses_remaining === undefined
+          ? null
+          : Number(res.guesses_remaining)
+
+      // streak is local UX only
       if (myTeam && game?.current_turn_team === myTeam) {
         const isCorrect = res.revealed_color === myTeam
         setRoundCorrectStreak((prev) => (isCorrect ? prev + 1 : 0))
       }
-      setGame((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          status: res.game_status,
-          current_turn_team: res.current_turn,
-          winning_team: res.winning_team,
-          guesses_remaining: res.guesses_remaining,
-          red_remaining: res.red_remaining,
-          blue_remaining: res.blue_remaining
+
+      // Always trust DB for counters + turn changes (fixes "cards left" inaccuracies).
+      const g1 = await loadGame(gameId)
+      setGame(g1)
+      setClueWord(g1.clue_word ?? '')
+      setClueNumber(g1.clue_number ?? 1)
+
+      // Auto end turn when guesses hit 0 (reliable even if realtime misses updates).
+      const wasMyTurn = Boolean(myTeam && game?.current_turn_team === myTeam)
+      const gr = typeof nextGuesses === 'number' && Number.isFinite(nextGuesses)
+        ? nextGuesses
+        : Number(g1.guesses_remaining ?? -1)
+      if (wasMyTurn && g1.status === 'active' && !g1.winning_team && Number.isFinite(gr) && gr === 0) {
+        const turnSig = `${g1.current_turn_team ?? 'x'}|${(g1.state as any)?.turn_no ?? ''}`
+        if (!autoEndTurnRef.current.inFlight && autoEndTurnRef.current.sig !== turnSig) {
+          autoEndTurnRef.current.inFlight = true
+          autoEndTurnRef.current.sig = turnSig
+          try {
+            await endTurn(gameId)
+          } catch (err) {
+            console.warn('[game] reveal -> auto end_turn failed:', err)
+            showCenterNotice(supaErr(err), 'info', 2600)
+          } finally {
+            autoEndTurnRef.current.inFlight = false
+          }
+
+          // pull fresh game state after end_turn so UI flips immediately
+          try {
+            const g2 = await loadGame(gameId)
+            setGame(g2)
+            setClueWord(g2.clue_word ?? '')
+            setClueNumber(g2.clue_number ?? 1)
+          } catch (err) {
+            console.warn('[game] post end_turn reload failed:', err)
+          }
         }
-      })
+      }
     } catch (err) {
       console.error('[game] reveal failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setPendingRevealPos(null)
     }
   }
 
+
   async function handleSetClue() {
     if (!gameId) return
     try {
-      setBusy('Setting clueâ€¦')
+      setBusy('Setting clue…')
       await setClue(gameId, clueWord, clueNumber)
     } catch (err) {
       console.error('[game] set clue failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
@@ -741,11 +912,11 @@ export default function GameRoute() {
   async function handleEndTurn() {
     if (!gameId) return
     try {
-      setBusy('Ending turnâ€¦')
+      setBusy('Ending turn…')
       await endTurn(gameId)
     } catch (err) {
       console.error('[game] end turn failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
@@ -754,27 +925,119 @@ export default function GameRoute() {
   async function handleStopPlaying() {
     if (!game?.lobby_id) return
     try {
-      setBusy('Leavingâ€¦')
+      setBusy('Leaving…')
       await stopPlaying(game.lobby_id)
       clearLastLobbyMemory()
       navigate('/', { replace: true })
     } catch (err) {
       console.error('[game] stop playing failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
   }
 
+
+  async function getLobbyCodeSafe(): Promise<string | null> {
+    if (!game?.lobby_id) return null
+    if (lobbyCode) return lobbyCode
+    try {
+      const l = await getLobbyById(game.lobby_id)
+      const code = String(l.code ?? '').trim().toUpperCase()
+      if (!code) return null
+      setLobbyCode(code)
+      return code
+    } catch (err) {
+      console.warn('[game] get lobby code failed:', err)
+      showCenterNotice('Could not load lobby code.', 'info', 2200)
+      return null
+    }
+  }
+
+  async function handleHome() {
+    await handleStopPlaying()
+  }
+
+  function handleProfile() {
+    navigate('/profile')
+  }
+
+  async function handleCopyLobbyCode() {
+    const code = await getLobbyCodeSafe()
+    if (!code) return
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = code
+        ta.setAttribute('readonly', 'true')
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      showCenterNotice(`Lobby code copied: ${code}`, 'info', 1800)
+    } catch (err) {
+      console.warn('[game] copy lobby code failed:', err)
+      showCenterNotice('Copy failed.', 'info', 2000)
+    }
+  }
+
+  async function handleBackToLobby() {
+    const code = await getLobbyCodeSafe()
+    if (!code) return
+    try {
+      sessionStorage.setItem('oneclue_allow_lobby_view_until', String(Date.now() + 10 * 60 * 1000))
+    } catch {
+      // ignore
+    }
+    navigate(`/lobby/${code}`)
+  }
+
+  async function handleExitGame() {
+    const ok = window.confirm('Exit this game completely and return home?')
+    if (!ok) return
+    await handleStopPlaying()
+  }
+
+// If the host stops playing, the RPC should mark the game as abandoned.
+// Everyone should leave the game screen when that happens.
+useEffect(() => {
+  let cancelled = false
+  if (!game) return
+  if (game.status !== 'abandoned') return
+
+  const lobbyId = game.lobby_id
+  ;(async () => {
+    try {
+      const l = await getLobbyById(lobbyId)
+      if (cancelled) return
+      navigate(`/lobby/${l.code}`, { replace: true })
+    } catch (err) {
+      console.warn('[game] abandoned -> redirect failed:', err)
+      if (!cancelled) navigate('/', { replace: true })
+    }
+  })()
+
+  return () => {
+    cancelled = true
+  }
+}, [game?.status, game?.lobby_id, navigate])
+
+
   async function handleRestart() {
     if (!game?.lobby_id) return
     try {
-      setBusy('Restartingâ€¦')
+      setBusy('Restarting…')
       const code = await restartLobby(game.lobby_id)
       navigate(`/settings/${code}`)
     } catch (err) {
       console.error('[game] restart failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
@@ -784,19 +1047,19 @@ export default function GameRoute() {
     if (!gameId) return
     if (!isGameActive) return
     try {
-      setBusy('Using diceâ€¦')
+      setBusy('Using dice…')
 
       // options needing positions
       if (option === 'sabotage_reassign' || option === 'steal_reassign') {
         const posStr = window.prompt('Enter the target position (0-24):')
         if (posStr === null) return
         const pos = Number(posStr)
-        if (!Number.isFinite(pos)) return alert('invalid pos')
+        if (!Number.isFinite(pos)) return showCenterNotice('Invalid position.', 'info', 2000)
         const res = await useDiceOption(gameId, option, { pos })
-        alert(JSON.stringify(res, null, 2))
+        console.log('[dice result]', res)
+        showCenterNotice('Dice used.', 'info', 1600)
         return
       }
-
       if (option === 'swap') {
         const aStr = window.prompt('Enter pos_a (your team unrevealed) 0-24:')
         if (aStr === null) return
@@ -804,23 +1067,23 @@ export default function GameRoute() {
         if (bStr === null) return
         const pos_a = Number(aStr)
         const pos_b = Number(bStr)
-        if (!Number.isFinite(pos_a) || !Number.isFinite(pos_b)) return alert('invalid positions')
+        if (!Number.isFinite(pos_a) || !Number.isFinite(pos_b)) return showCenterNotice('Invalid positions.', 'info', 2000)
         const res = await useDiceOption(gameId, option, { pos_a, pos_b })
-        alert(JSON.stringify(res, null, 2))
+        console.log('[dice result]', res)
+        showCenterNotice('Dice used.', 'info', 1600)
         return
       }
-
       // simple options
       const res = await useDiceOption(gameId, option, {})
-      alert(JSON.stringify(res, null, 2))
+      console.log('[dice result]', res)
+      showCenterNotice('Dice used.', 'info', 1600)
     } catch (err) {
       console.error('[dice] failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
   }
-
   function diceOptionLabel(option: DiceOption): string {
     if (option === 'double_hint') return 'Double Hint'
     if (option === 'sabotage_reassign') return 'Sabotage Reassign'
@@ -843,7 +1106,7 @@ export default function GameRoute() {
     if (!gameId) return
     if (!isGameActive) return
     try {
-      setBusy('Using helperâ€¦')
+      setBusy('Using helper…')
       const res = await useHelperAction(gameId, action, {})
       if (action === 'random_peek') {
         const pos = Number(res.pos)
@@ -858,21 +1121,21 @@ export default function GameRoute() {
         }
         showCenterNotice(`Peek: ${color}`, 'info', 1300)
       } else if (action === 'time_cut') {
-        alert(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`)
+showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`, 'info', 2200)
       } else {
-        alert('Shuffle unrevealed done')
+        showCenterNotice('Shuffle unrevealed done', 'info', 2200)
       }
     } catch (err) {
       console.error('[helper] failed:', err)
-      alert(supaErr(err))
+      showCenterNotice(supaErr(err), 'info', 2600)
     } finally {
       setBusy(null)
     }
   }
 
   const pillCount = clampInt(game?.guesses_remaining ?? 0, 0, 99)
-  const blueLeft = clampInt((remainingBase?.blue ?? ((game?.blue_remaining ?? 0) + revealedCounts.blue)) - revealedCounts.blue, 0, 99)
-  const redLeft = clampInt((remainingBase?.red ?? ((game?.red_remaining ?? 0) + revealedCounts.red)) - revealedCounts.red, 0, 99)
+  const blueLeft = clampInt(game?.blue_remaining ?? 0, 0, 99)
+  const redLeft = clampInt(game?.red_remaining ?? 0, 0, 99)
   const forcedWinner: 'red' | 'blue' | null = blueLeft === 0 ? 'blue' : redLeft === 0 ? 'red' : null
   const effectiveWinner: 'red' | 'blue' | null = game?.winning_team ?? forcedWinner
   const effectiveStatus = game?.status === 'active' && forcedWinner ? 'finished' : game?.status
@@ -883,6 +1146,16 @@ export default function GameRoute() {
   const canOperate = !amSpymaster && isMyTurn && isGameActive && hasClue && pillCount > 0
   const canEndTurnOperate = !amSpymaster && isMyTurn && isGameActive && hasClue
   const canSpymaster = amSpymaster && isMyTurn && isGameActive
+  const shouldShakeCards = isGameActive && turnLeft > 0 && turnLeft <= 10
+  const currentTurnTeam = isGameActive ? game?.current_turn_team ?? null : null
+  const turnIndicatorClass = !isGameActive ? 'done' : currentTurnTeam === 'red' ? 'red' : currentTurnTeam === 'blue' ? 'blue' : 'idle'
+  const turnIndicatorLabel = !isGameActive
+    ? 'Game Finished'
+    : currentTurnTeam === 'red'
+      ? 'Red Team Turn'
+      : currentTurnTeam === 'blue'
+        ? 'Blue Team Turn'
+        : 'Waiting For Turn'
 
   useEffect(() => {
     if (isGameActive) setShowWinTrail(false)
@@ -893,13 +1166,32 @@ export default function GameRoute() {
   const blueTeam = playable.filter((m) => m.team === 'blue')
 
   function memberDisplayName(userId: string, index: number): string {
-    return displayNameOrFallback(profileNameByUserId[userId], `Player ${index + 1}`)
+    return displayNameOrFallback(profileByUserId[userId]?.displayName, `Player ${index + 1}`)
+  }
+
+  function memberAvatar(userId: string, team: 'red' | 'blue' | null): string {
+    const custom = String(profileByUserId[userId]?.avatarUrl ?? '').trim()
+    if (custom) return custom
+    return fallbackAvatarFor(team, userId)
   }
 
   const bg =
     'radial-gradient(900px 520px at 50% 10%, rgba(255,255,255,0.08), rgba(0,0,0,0) 60%), #000'
   const panel = 'rgba(0,0,0,0.35)'
   const border = '1px solid rgba(255,255,255,0.10)'
+  const navIcons = {
+    home: '/assets/icons/nav/home.svg',
+    profile: '/assets/icons/nav/profile.svg',
+    copy: '/assets/icons/nav/copy.svg',
+    backToLobby: '/assets/icons/nav/backToLobby.svg',
+    rules: '/assets/icons/nav/rules.svg',
+    exit: '/assets/icons/nav/exit.svg'
+  } as const
+  const helperIcons = {
+    timeCut: '/assets/icons/helperAction/time.svg',
+    randomPeek: '/assets/icons/helperAction/peek.svg',
+    shuffle: '/assets/icons/helperAction/shuffle.svg'
+  } as const
 
   function cardBg(c: GameCard, hidden?: CardColor): string {
     if (c.revealed && c.revealed_color) {
@@ -944,9 +1236,79 @@ export default function GameRoute() {
           animation: oc-ambient-swirl 12s ease-in-out infinite alternate;
           z-index:0;
         }
+        .oc-turn-indicator{
+          height: 42px;
+          min-width: 186px;
+          border-radius: 999px;
+          padding: 0 14px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          border: 1px solid rgba(255,255,255,0.22);
+          color: rgba(255,255,255,0.97);
+          font-weight: 950;
+          text-transform: uppercase;
+          letter-spacing: .04em;
+          box-shadow: 0 14px 28px rgba(0,0,0,0.44), inset 0 0 0 1px rgba(255,255,255,0.10);
+          animation: oc-turn-pulse 1.6s ease-in-out infinite;
+        }
+        .oc-turn-dot{
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: currentColor;
+          box-shadow: 0 0 12px currentColor;
+        }
+        .oc-turn-sub{
+          font-size: 11px;
+          font-weight: 850;
+          opacity: 0.88;
+        }
+        .oc-turn-indicator.red{
+          background: linear-gradient(180deg, rgba(255,105,105,0.36), rgba(70,20,20,0.82));
+          border-color: rgba(255,145,145,0.52);
+          color: rgba(255,226,226,0.98);
+        }
+        .oc-turn-indicator.blue{
+          background: linear-gradient(180deg, rgba(105,130,255,0.38), rgba(20,30,85,0.84));
+          border-color: rgba(165,190,255,0.52);
+          color: rgba(225,235,255,0.98);
+        }
+        .oc-turn-indicator.idle{
+          background: linear-gradient(180deg, rgba(225,225,225,0.20), rgba(40,40,46,0.82));
+          border-color: rgba(255,255,255,0.36);
+          color: rgba(242,244,255,0.95);
+        }
+        .oc-turn-indicator.done{
+          background: linear-gradient(180deg, rgba(255,220,125,0.30), rgba(58,44,12,0.82));
+          border-color: rgba(255,230,165,0.56);
+          color: rgba(255,242,198,0.98);
+          animation: none;
+        }
+        .oc-nav-btn{
+          display:inline-flex;
+          align-items:center;
+          gap:8px;
+        }
+        .oc-nav-icon{
+          width:14px;
+          height:14px;
+          object-fit:contain;
+          opacity:.96;
+          filter: brightness(0) invert(1);
+        }
+        .oc-nav-icon-original{
+          filter: none;
+        }
 
         .oc-card{
           transform-origin: 50% 62%;
+        }
+        .oc-card-shell{
+          position: relative;
+        }
+        .oc-card-shell.oc-last10{
+          animation: oc-last10-shake 0.24s ease-in-out infinite;
         }
         .oc-card.oc-card-interactive:hover{
           animation: oc-suspense-hover 0.55s ease forwards;
@@ -957,6 +1319,29 @@ export default function GameRoute() {
         .oc-card.oc-card-peek{
           box-shadow: 0 0 30px rgba(255,225,120,0.42), 0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 2px rgba(255,225,120,0.65);
           filter: saturate(1.2) brightness(1.12);
+        }
+        .oc-card.oc-card-spymaster-crossed{
+          opacity: 0.78;
+        }
+        .oc-card.oc-card-spymaster-crossed::before,
+        .oc-card.oc-card-spymaster-crossed::after{
+          content: '';
+          position: absolute;
+          left: 10%;
+          right: 10%;
+          top: 50%;
+          height: 2px;
+          border-radius: 999px;
+          background: rgba(255,245,210,0.78);
+          box-shadow: 0 0 10px rgba(0,0,0,0.45);
+          pointer-events: none;
+          z-index: 3;
+        }
+        .oc-card.oc-card-spymaster-crossed::before{
+          transform: rotate(20deg);
+        }
+        .oc-card.oc-card-spymaster-crossed::after{
+          transform: rotate(-20deg);
         }
 
         .oc-card-fx-correct{
@@ -980,6 +1365,18 @@ export default function GameRoute() {
         @keyframes oc-ambient-swirl{
           0%{ transform: translate3d(-2%, -1%, 0) scale(1); opacity:.62; }
           100%{ transform: translate3d(2.5%, 2%, 0) scale(1.08); opacity:.94; }
+        }
+        @keyframes oc-last10-shake{
+          0%{ transform: translate(0, 0) rotate(0deg); }
+          25%{ transform: translate(-1px, 1px) rotate(-0.45deg); }
+          50%{ transform: translate(1px, -1px) rotate(0.45deg); }
+          75%{ transform: translate(-1px, -1px) rotate(-0.35deg); }
+          100%{ transform: translate(0, 0) rotate(0deg); }
+        }
+        @keyframes oc-turn-pulse{
+          0%{ transform: translateY(0); filter: brightness(1); }
+          50%{ transform: translateY(-1px); filter: brightness(1.12); }
+          100%{ transform: translateY(0); filter: brightness(1); }
         }
         @keyframes oc-suspense-breathe{
           0%{ transform: translateY(0) scale(1); filter: brightness(1); }
@@ -1084,9 +1481,42 @@ export default function GameRoute() {
         }
         .oc-game-layout{
           display:grid;
-          grid-template-columns: 250px 1fr 250px;
-          gap: 12px;
+          grid-template-columns: 210px minmax(0, 1fr) 210px;
+          gap: 14px;
           align-items: start;
+        }
+        .oc-center-stack{
+          display:grid;
+          gap:12px;
+        }
+        .oc-utility-row{
+          display:grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          position: static;
+          width: auto;
+          z-index: auto;
+          order: 4;
+          margin-top: 10px;
+        }
+        .oc-utility-row > div{
+          padding: 8px !important;
+          border-radius: 12px !important;
+        }
+        .oc-utility-row button{
+          padding: 6px 8px !important;
+          border-radius: 10px !important;
+          font-size: 11px !important;
+        }
+        .oc-utility-row .oc-nav-icon{
+          width: 12px;
+          height: 12px;
+        }
+        .oc-cards-grid{
+          display:grid;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          gap: 12px;
+          order: 3;
         }
         .oc-team-panel{
           border-radius: 18px;
@@ -1102,24 +1532,131 @@ export default function GameRoute() {
           border-color: rgba(90,140,255,0.38);
           background: linear-gradient(180deg, rgba(90,140,255,0.16), rgba(0,0,0,0.30));
         }
+        .oc-side-tools{
+          display:grid;
+          gap:10px;
+          align-content:start;
+          position: sticky;
+          top: 10px;
+        }
+        .oc-tool-card{
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(0,0,0,0.34);
+          padding: 8px;
+          display:grid;
+          gap:8px;
+        }
+        .oc-tool-title{
+          font-size: 11px;
+          font-weight: 900;
+          opacity: 0.9;
+          letter-spacing: .02em;
+          text-transform: uppercase;
+        }
+        .oc-tool-meta{
+          font-size: 10px;
+          font-weight: 800;
+          opacity: 0.76;
+        }
+        .oc-tool-btn{
+          padding: 7px 8px;
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.16);
+          background: rgba(255,255,255,0.06);
+          color: #fff;
+          font-size: 11px;
+          font-weight: 900;
+          cursor: pointer;
+          display:inline-flex;
+          align-items:center;
+          gap:6px;
+          justify-content:flex-start;
+        }
+        .oc-tool-btn .oc-nav-icon{
+          width: 12px;
+          height: 12px;
+        }
         .oc-member{
           border-radius: 12px;
           padding: 10px;
-          border: 1px solid rgba(255,255,255,0.14);
-          background: rgba(0,0,0,0.34);
+          border: 1px solid rgba(255,255,255,0.18);
+          background:
+            linear-gradient(140deg, rgba(140,240,255,0.10), transparent 44%),
+            linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.34));
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.48), 0 12px 24px rgba(0,0,0,0.34);
           display: grid;
-          gap: 6px;
+          gap: 8px;
+          position: relative;
+          overflow: hidden;
+        }
+        .oc-member::after{
+          content:'';
+          position:absolute;
+          inset:0;
+          pointer-events:none;
+          background: linear-gradient(120deg, rgba(255,255,255,0.12), transparent 26%, transparent 74%, rgba(255,255,255,0.08));
+          opacity:.32;
+        }
+        .oc-member-main{
+          display:flex;
+          align-items:center;
+          gap:10px;
+          min-width:0;
+        }
+        .oc-member-avatar-wrap{
+          width:46px;
+          height:46px;
+          border-radius:12px;
+          padding:2px;
+          background: linear-gradient(135deg, rgba(120,255,255,0.82), rgba(120,120,255,0.30));
+          box-shadow: 0 0 0 1px rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.40);
+          flex: 0 0 auto;
+        }
+        .oc-member-avatar{
+          width:100%;
+          height:100%;
+          object-fit:cover;
+          border-radius:10px;
+          display:block;
+          border:1px solid rgba(255,255,255,0.2);
+          background: rgba(0,0,0,0.38);
+        }
+        .oc-member-meta{
+          min-width:0;
+          display:grid;
+          gap:3px;
+        }
+        .oc-member-name{
+          font-weight:900;
+          white-space:nowrap;
+          overflow:hidden;
+          text-overflow:ellipsis;
+        }
+        .oc-member-role{
+          font-size:12px;
+          opacity:0.86;
         }
         @media (max-width: 1120px){
+          .oc-utility-row{
+            position: static;
+            width: auto;
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 1080px){
           .oc-game-layout{
             grid-template-columns: 1fr;
+          }
+          .oc-side-tools{
+            position: static;
           }
         }
       `}</style>
       <div
         className="oc-stage"
         style={{
-          width: 'min(1040px, 100%)',
+          width: 'min(1380px, 100%)',
           borderRadius: 26,
           border,
           background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))',
@@ -1132,7 +1669,7 @@ export default function GameRoute() {
         <div style={{ position: 'absolute', inset: 10, borderRadius: 18, border: '1px solid rgba(255,255,255,0.06)', pointerEvents: 'none' }} />
 
         {/* top counters */}
-        <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'center', gap: 12, paddingTop: 6, paddingBottom: 14 }}>
+        <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 12, paddingTop: 6, paddingBottom: 14 }}>
           <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(120,110,255,0.26)' }} title="Blue remaining">
             {blueLeft}
           </div>
@@ -1156,6 +1693,11 @@ export default function GameRoute() {
             </div>
             <div style={{ fontWeight: 900, opacity: 0.95 }}>{formatMMSS(turnLeft)}</div>
           </div>
+          <div className={`oc-turn-indicator ${turnIndicatorClass}`} title="Current turn">
+            <span className="oc-turn-dot" />
+            <span>{turnIndicatorLabel}</span>
+            {isGameActive && isMyTurn ? <span className="oc-turn-sub">Your turn</span> : null}
+          </div>
 
           <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,95,95,0.22)' }} title="Red remaining">
             {redLeft}
@@ -1163,7 +1705,7 @@ export default function GameRoute() {
         </div>
 
         <div style={{ position: 'relative', zIndex: 2, padding: '0 10px 10px' }}>
-          {state === 'loading' && <div style={{ padding: 12 }}>Loadingâ€¦</div>}
+          {state === 'loading' && <div style={{ padding: 12 }}>Loading…</div>}
           {state === 'error' && (
             <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(255,90,90,0.45)', background: panel }}>
               Error: {error}
@@ -1172,17 +1714,43 @@ export default function GameRoute() {
 
           {state === 'ready' && game && (
             <>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                <button className="oc-nav-btn" onClick={handleHome} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.home} alt="" aria-hidden="true" />
+                  Home
+                </button>
+                <button className="oc-nav-btn" onClick={handleProfile} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.profile} alt="" aria-hidden="true" />
+                  Profile
+                </button>
+                <button className="oc-nav-btn" onClick={handleCopyLobbyCode} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.copy} alt="" aria-hidden="true" />
+                  Copy Lobby Code
+                </button>
+                <button className="oc-nav-btn" onClick={handleBackToLobby} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.backToLobby} alt="" aria-hidden="true" />
+                  Back to Lobby
+                </button>
+                <button className="oc-nav-btn" onClick={() => setShowRules((v) => !v)} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.rules} alt="" aria-hidden="true" />
+                  Help / Rules
+                </button>
+                <button className="oc-nav-btn" onClick={handleExitGame} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border: '1px solid rgba(255,125,125,0.38)', background: 'rgba(255,85,85,0.14)', color: 'rgba(255,255,255,0.98)', fontWeight: 900, cursor: 'pointer' }}>
+                  <img className="oc-nav-icon" src={navIcons.exit} alt="" aria-hidden="true" />
+                  Exit Game
+                </button>
+              </div>
+
               {/* header */}
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <div style={{ opacity: 0.92, fontWeight: 900 }}>
-                    Clue: <span style={{ opacity: 1 }}>{game.clue_word ?? 'â€”'}</span>
+                    Clue: <span style={{ opacity: 1 }}>{game.clue_word ?? '—'}</span>
                     {game.clue_number !== null ? <span style={{ opacity: 0.85 }}> ({game.clue_number})</span> : null}
                   </div>
                   <div style={{ opacity: 0.78, fontWeight: 800, fontSize: 12 }}>
-                    You: {teamLabel(myTeam)} â€¢ {amSpymaster ? 'Spymaster' : 'Operative'} â€¢ streak: {myStreak}
-                    {!isGameActive && effectiveWinner ? <span> â€¢ Winner: {teamLabel(effectiveWinner)}</span> : null}
-                  </div>
+                    You: {teamLabel(myTeam)} • {amSpymaster ? 'Spymaster' : 'Operative'} • streak: {myStreak}
+                    {!isGameActive && effectiveWinner ? <span> • Winner: {teamLabel(effectiveWinner)}</span> : null}                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1197,10 +1765,6 @@ export default function GameRoute() {
                       End turn
                     </button>
                   )}
-
-                  <button onClick={handleStopPlaying} disabled={busy !== null} style={{ padding: '10px 14px', borderRadius: 999, border, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.90)', fontWeight: 900, cursor: 'pointer' }}>
-                    Stop playing
-                  </button>
 
                   {amOwner && (
                     <button onClick={handleRestart} disabled={busy !== null} style={{ padding: '10px 14px', borderRadius: 999, border: '1px solid rgba(170,255,255,0.35)', background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
@@ -1220,14 +1784,28 @@ export default function GameRoute() {
                     ) : (
                       redTeam.map((m, idx) => {
                         const you = m.user_id === myUserId
+                        const name = memberDisplayName(m.user_id, idx)
+                        const avatarSrc = memberAvatar(m.user_id, m.team)
+                        const fallbackAvatar = fallbackAvatarFor(m.team, `${m.user_id}:fallback`)
                         return (
                           <div key={`red-${m.user_id}`} className="oc-member">
-                            <div style={{ fontWeight: 900 }}>
-                              {you ? `You (${memberDisplayName(m.user_id, idx)})` : memberDisplayName(m.user_id, idx)}
-                            </div>
-                            <div style={{ fontSize: 11, opacity: 0.7 }}>{shortId(m.user_id)}</div>
-                            <div style={{ fontSize: 12, opacity: 0.86 }}>
-                              {m.is_spymaster ? 'Spymaster' : 'Operative'}
+                            <div className="oc-member-main">
+                              <div className="oc-member-avatar-wrap">
+                                <img
+                                  className="oc-member-avatar"
+                                  src={avatarSrc}
+                                  alt={`${name} avatar`}
+                                  onError={(e) => {
+                                    const img = e.currentTarget
+                                    if (img.src.endsWith(fallbackAvatar)) return
+                                    img.src = fallbackAvatar
+                                  }}
+                                />
+                              </div>
+                              <div className="oc-member-meta">
+                                <div className="oc-member-name">{you ? `You (${name})` : name}</div>
+                                <div className="oc-member-role">{m.is_spymaster ? 'Spymaster' : 'Operative'}</div>
+                              </div>
                             </div>
                           </div>
                         )
@@ -1253,9 +1831,9 @@ export default function GameRoute() {
                   </div>
                 </div>
 
-                <div>
+                <div className="oc-center-stack">
                   {canSpymaster && (
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12, padding: 12, borderRadius: 18, border, background: panel }}>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: 12, borderRadius: 18, border, background: panel }}>
                       <input
                         value={clueWord}
                         onChange={(e) => setClueWord(e.target.value)}
@@ -1276,7 +1854,7 @@ export default function GameRoute() {
                     </div>
                   )}
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
+                  <div className="oc-cards-grid">
                     {cards.map((c, idx) => {
                       const hidden = amSpymaster ? keyMap.get(c.pos) : undefined
                       const corner = hidden ? keyColorText(hidden) : null
@@ -1285,45 +1863,48 @@ export default function GameRoute() {
                       const peekClass = peekFlash?.pos === c.pos ? 'oc-card-peek' : ''
                       const interactiveClass = !c.revealed ? 'oc-card-interactive' : ''
                       const revealedClass = c.revealed ? 'oc-card-is-revealed' : ''
+                      const spymasterCrossedClass = amSpymaster && c.revealed ? 'oc-card-spymaster-crossed' : ''
                       return (
-                        <button
-                          key={c.pos}
-                          className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${fxClass}`.trim()}
-                          onClick={() => handleReveal(c.pos)}
-                          disabled={busy !== null || pendingRevealPos !== null || c.revealed || !isGameActive}
-                          style={{
-                            position: 'relative',
-                            height: 92,
-                            borderRadius: 16,
-                            border: '1px solid rgba(255,255,255,0.10)',
-                            background: cardBg(c, hidden),
-                            boxShadow: '0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.50)',
-                            color: 'rgba(240,244,255,0.92)',
-                            cursor: c.revealed || pendingRevealPos !== null || !isGameActive ? 'not-allowed' : 'pointer',
-                            overflow: 'hidden',
-                            animationDelay: `${idx * 55}ms`
-                          }}
-                          title={c.word}
-                        >
-                          {corner && (
-                            <div style={{ position: 'absolute', right: 10, top: 10, width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 900, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.25)', opacity: 0.9 }}>
-                              {corner}
+                        <div key={c.pos} className={`oc-card-shell ${shouldShakeCards ? 'oc-last10' : ''}`} style={{ animationDelay: `${idx * 12}ms` }}>
+                          <button
+                            className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${spymasterCrossedClass} ${fxClass}`.trim()}
+                            onClick={() => handleReveal(c.pos)}
+                            disabled={busy !== null || pendingRevealPos !== null || c.revealed || !isGameActive}
+                            style={{
+                              position: 'relative',
+                              width: '100%',
+                              height: 116,
+                              borderRadius: 16,
+                              border: '1px solid rgba(255,255,255,0.10)',
+                              background: cardBg(c, hidden),
+                              boxShadow: '0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.50)',
+                              color: 'rgba(240,244,255,0.92)',
+                              cursor: c.revealed || pendingRevealPos !== null || !isGameActive ? 'not-allowed' : 'pointer',
+                              overflow: 'hidden',
+                              animationDelay: `${idx * 55}ms`
+                            }}
+                            title={c.word}
+                          >
+                            {corner && (
+                              <div style={{ position: 'absolute', right: 10, top: 10, width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 900, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.25)', opacity: 0.9 }}>
+                                {corner}
+                              </div>
+                            )}
+                            {peekFlash?.pos === c.pos && (
+                              <div style={{ position: 'absolute', left: 8, top: 8, padding: '2px 6px', borderRadius: 8, border: '1px solid rgba(255,225,120,0.78)', background: 'rgba(255,225,120,0.24)', color: 'rgba(255,245,185,0.98)', fontSize: 11, fontWeight: 900 }}>
+                                {peekFlash.color || 'PEEK'}
+                              </div>
+                            )}
+                            <div className="oc-word" style={{ height: '100%', display: 'grid', placeItems: 'center', padding: '0 10px', textAlign: 'center', fontWeight: 900, letterSpacing: 0.3, textTransform: 'uppercase', opacity: c.revealed ? 0.85 : 0.95 }}>
+                              {c.word}
                             </div>
-                          )}
-                          {peekFlash?.pos === c.pos && (
-                            <div style={{ position: 'absolute', left: 8, top: 8, padding: '2px 6px', borderRadius: 8, border: '1px solid rgba(255,225,120,0.78)', background: 'rgba(255,225,120,0.24)', color: 'rgba(255,245,185,0.98)', fontSize: 11, fontWeight: 900 }}>
-                              {peekFlash.color || 'PEEK'}
-                            </div>
-                          )}
-                          <div className="oc-word" style={{ height: '100%', display: 'grid', placeItems: 'center', padding: '0 10px', textAlign: 'center', fontWeight: 900, letterSpacing: 0.3, textTransform: 'uppercase', opacity: c.revealed ? 0.85 : 0.95 }}>
-                            {c.word}
-                          </div>
-                        </button>
+                          </button>
+                        </div>
                       )
                     })}
                   </div>
 
-                  <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div className="oc-utility-row">
                     <div style={{ padding: 12, borderRadius: 18, border, background: panel }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                         <div style={{ fontWeight: 900 }}>Dice</div>
@@ -1349,30 +1930,18 @@ export default function GameRoute() {
                     </div>
 
                     <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
-                      <button disabled={!isGameActive || busy !== null} onClick={() => runHelper('time_cut')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('time_cut')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.timeCut} alt="" aria-hidden="true" />
                         Time Cut
                       </button>
-                      <button disabled={!isGameActive || busy !== null} onClick={() => runHelper('random_peek')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('random_peek')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.randomPeek} alt="" aria-hidden="true" />
                         Random Peek
                       </button>
-                      <button disabled={!isGameActive || busy !== null} onClick={() => runHelper('shuffle_unrevealed')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('shuffle_unrevealed')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
+                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.shuffle} alt="" aria-hidden="true" />
                         Card Shuffle
                       </button>
-                    </div>
-                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
-                      <div style={{ fontWeight: 900, marginBottom: 8 }}>Your Peeks</div>
-                      {myPeeks.length === 0 ? (
-                        <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>â€”</div>
-                      ) : (
-                        <div style={{ display: 'grid', gap: 6 }}>
-                          {myPeeks.slice(-5).reverse().map((p, idx) => (
-                            <div key={`${p.pos}-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, opacity: 0.9, fontWeight: 900 }}>
-                              <span>pos {p.pos}</span>
-                              <span>{p.color.toUpperCase()}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -1386,14 +1955,28 @@ export default function GameRoute() {
                     ) : (
                       blueTeam.map((m, idx) => {
                         const you = m.user_id === myUserId
+                        const name = memberDisplayName(m.user_id, idx)
+                        const avatarSrc = memberAvatar(m.user_id, m.team)
+                        const fallbackAvatar = fallbackAvatarFor(m.team, `${m.user_id}:fallback`)
                         return (
                           <div key={`blue-${m.user_id}`} className="oc-member">
-                            <div style={{ fontWeight: 900 }}>
-                              {you ? `You (${memberDisplayName(m.user_id, idx)})` : memberDisplayName(m.user_id, idx)}
-                            </div>
-                            <div style={{ fontSize: 11, opacity: 0.7 }}>{shortId(m.user_id)}</div>
-                            <div style={{ fontSize: 12, opacity: 0.86 }}>
-                              {m.is_spymaster ? 'Spymaster' : 'Operative'}
+                            <div className="oc-member-main">
+                              <div className="oc-member-avatar-wrap">
+                                <img
+                                  className="oc-member-avatar"
+                                  src={avatarSrc}
+                                  alt={`${name} avatar`}
+                                  onError={(e) => {
+                                    const img = e.currentTarget
+                                    if (img.src.endsWith(fallbackAvatar)) return
+                                    img.src = fallbackAvatar
+                                  }}
+                                />
+                              </div>
+                              <div className="oc-member-meta">
+                                <div className="oc-member-name">{you ? `You (${name})` : name}</div>
+                                <div className="oc-member-role">{m.is_spymaster ? 'Spymaster' : 'Operative'}</div>
+                              </div>
                             </div>
                           </div>
                         )
@@ -1487,6 +2070,27 @@ export default function GameRoute() {
           </div>
         )}
 
+        {showRules && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 11, background: 'rgba(0,0,0,0.66)', display: 'grid', placeItems: 'center', padding: 14 }}>
+            <div style={{ width: 'min(680px, 95vw)', borderRadius: 16, border, background: 'rgba(0,0,0,0.86)', boxShadow: '0 24px 70px rgba(0,0,0,0.72)', padding: 16, display: 'grid', gap: 12 }}>
+              <div style={{ fontWeight: 1000, fontSize: 20 }}>Help / Rules</div>
+              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6, opacity: 0.92 }}>
+                <li>Spymaster gives one-word clue plus number each turn.</li>
+                <li>Operatives reveal cards and can continue on correct guesses.</li>
+                <li>Reveal all your team cards first to win the game.</li>
+                <li>Revealing the assassin ends the game for your team.</li>
+                <li>Dice unlocks after a streak of three correct reveals.</li>
+                <li>Helper actions are one-time per game per team.</li>
+              </ul>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button onClick={() => setShowRules(false)} style={{ padding: '9px 12px', borderRadius: 10, border, background: 'rgba(255,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {busy && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.60)', zIndex: 10 }}>
             <div style={{ padding: 16, borderRadius: 14, border, background: 'rgba(0,0,0,0.35)', fontWeight: 900 }}>{busy}</div>
@@ -1496,4 +2100,3 @@ export default function GameRoute() {
     </div>
   )
 }
-

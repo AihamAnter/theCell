@@ -64,23 +64,23 @@ textarea{
   display:flex;
   align-items:center;
   justify-content:center;
-  padding:22px 18px 26px;
+  padding:28px 18px 30px;
 }
 
 .homeFrame{
-  width:min(1100px, 100%);
+  width:min(1180px, 100%);
   border-radius: 26px;
-  border:1px solid rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.10);
   background:
-    linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012)),
-    rgba(7,10,16,.58);
-  box-shadow: var(--shadow);
-  padding:24px;
+    linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.012)),
+    rgba(7,10,16,.62);
+  box-shadow: 0 30px 90px rgba(0,0,0,.62);
+  padding:26px;
 }
 
 .homeHeader{
   text-align:center;
-  margin-bottom:18px;
+  margin-bottom:22px;
 }
 
 .homeEyebrow{
@@ -93,42 +93,48 @@ textarea{
 
 .homeTitle{
   margin:8px 0 6px;
-  font-size:44px;
+  font-size:58px;
   line-height:1;
-  letter-spacing:.5px;
+  letter-spacing:.04em;
+  text-transform: uppercase;
+  font-weight: 1000;
+  text-shadow: 0 8px 26px rgba(22,34,60,.44);
 }
 
 .homeSubtitle{
   margin:0;
   color: var(--muted);
   font-weight:700;
+  font-size: 16px;
 }
 
 .homeGrid{
   display:grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap:14px;
+  gap:16px;
 }
 
 .homeCard{
-  border-radius: 18px;
+  border-radius: 20px;
   border:1px solid rgba(255,255,255,.12);
   background:
     linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)),
     rgba(0,0,0,.28);
   box-shadow: var(--inset), var(--inset2), inset 0 0 0 1px rgba(0,0,0,.50);
-  padding:16px;
+  padding:18px;
 }
 
 .homeCard h2{
-  margin:0;
-  font-size:24px;
+  margin:0 0 2px;
+  font-size:25px;
+  letter-spacing: .01em;
 }
 
 .homeCard p{
   margin:8px 0 14px;
   color: var(--muted);
-  font-weight:700;
+  font-weight:800;
+  line-height: 1.45;
   min-height: 36px;
 }
 
@@ -201,6 +207,133 @@ textarea{
 .homeBtnPrimary:hover,
 .homeBtnGhost:hover{
   filter:brightness(1.05);
+}
+
+.homeFrame{
+  position: relative;
+  overflow: hidden;
+}
+
+.homeFrame::before{
+  content:"";
+  position:absolute;
+  inset:-2px;
+  background:
+    radial-gradient(720px 280px at 10% 0%, rgba(80,145,255,.18), transparent 55%),
+    radial-gradient(720px 280px at 90% 0%, rgba(255,120,120,.14), transparent 55%);
+  pointer-events:none;
+}
+
+.homeHeader{
+  position: relative;
+  z-index: 1;
+}
+
+.homeTitle{
+  font-size: 52px;
+  letter-spacing: .03em;
+}
+
+.homeSubtitle{
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.homeGrid{
+  position: relative;
+  z-index: 1;
+}
+
+.homeCard{
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.homeCard:hover{
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,.2);
+  box-shadow: 0 16px 36px rgba(0,0,0,.42), var(--inset), var(--inset2), inset 0 0 0 1px rgba(0,0,0,.50);
+}
+
+.homeCardFeature{
+  border-color: rgba(255,255,255,.18);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.02)),
+    radial-gradient(600px 240px at 0% 0%, rgba(80,145,255,.14), transparent 60%),
+    rgba(0,0,0,.30);
+}
+
+.homeInput{
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+
+.homeInput:focus{
+  border-color: rgba(160,205,255,.5);
+  box-shadow:
+    0 0 0 3px rgba(47,107,255,.2),
+    inset 0 0 0 1px rgba(0,0,0,.45);
+}
+
+.homeBtnPrimary,
+.homeBtnGhost{
+  transition: transform .1s ease, filter .16s ease, box-shadow .16s ease;
+}
+
+.homeBtnPrimary:hover,
+.homeBtnGhost:hover{
+  box-shadow: 0 12px 22px rgba(0,0,0,.34), var(--inset), inset 0 0 0 1px rgba(0,0,0,.55);
+}
+
+.homeBtnPrimary:active,
+.homeBtnGhost:active{
+  transform: translateY(1px);
+}
+
+.homeTopCards{
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap:16px;
+  margin-bottom:16px;
+  position: relative;
+  z-index: 1;
+}
+
+.homeHeroChips{
+  margin-top:12px;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+}
+
+.homeHeroChip{
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.07);
+  font-size:11px;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+  font-weight:900;
+  color: rgba(233,239,255,.9);
+}
+
+.homeCardJoin{
+  background:
+    linear-gradient(180deg, rgba(89,146,255,.17), rgba(255,255,255,.02)),
+    rgba(0,0,0,.30);
+}
+
+.homeCardCreate{
+  background:
+    linear-gradient(180deg, rgba(255,182,93,.15), rgba(255,255,255,.02)),
+    rgba(0,0,0,.30);
+}
+
+.homeCardQuick{
+  background:
+    linear-gradient(180deg, rgba(118,226,178,.14), rgba(255,255,255,.02)),
+    rgba(0,0,0,.30);
 }
 
 .profileScene{

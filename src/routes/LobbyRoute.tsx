@@ -24,8 +24,8 @@ type MemberRow = {
 
 type LoadState = 'loading' | 'ready' | 'error'
 
-const ONLINE_MS = 25_000
-const HEARTBEAT_MS = 10_000
+const ONLINE_MS = 75_000
+const HEARTBEAT_MS = 30_000
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -86,6 +86,33 @@ function statusPill(lastSeen: string | null | undefined): { text: string; bg: st
   return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
 }
 
+const AVATAR_POOL = {
+  red: ['/assets/avatars/red-avatar/red-avatar.png', '/assets/avatars/red-avatar/red-avatar2.png', '/assets/avatars/red-avatar/red-avatar3.jpg'],
+  blue: ['/assets/avatars/blue-avatar/blue-avatar.png', '/assets/avatars/blue-avatar/blue-avatar2.png', '/assets/avatars/blue-avatar/blue-avatar3.png'],
+  neutral: ['/assets/gameavatar.png']
+} as const
+
+function hashSeed(input: string): number {
+  let h = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+function fallbackAvatarFor(team: 'red' | 'blue' | null, seed: string): string {
+  const bucket = team === 'red' ? AVATAR_POOL.red : team === 'blue' ? AVATAR_POOL.blue : AVATAR_POOL.neutral
+  const idx = hashSeed(seed) % bucket.length
+  return bucket[idx]
+}
+
+function avatarForMember(member: MemberRow): string {
+  const raw = String(member.profiles?.avatar_url ?? '').trim()
+  if (raw) return raw
+  return fallbackAvatarFor(member.team, member.user_id)
+}
+
 async function loadLatestLobbyGameId(lobbyId: string): Promise<string | null> {
   const { data, error } = await supabase
     .from('games')
@@ -119,6 +146,19 @@ export default function LobbyRoute() {
   const [isOwner, setIsOwner] = useState(false)
   const [myUserId, setMyUserId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  type ToastTone = 'info' | 'success' | 'error'
+  type ToastItem = { id: string; text: string; tone: ToastTone }
+
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
+
+  function addToast(text: string, tone: ToastTone = 'info', ms = 2600) {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setToasts((prev) => [...prev, { id, text, tone }].slice(-3))
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, ms)
+  }
 
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
@@ -168,7 +208,7 @@ export default function LobbyRoute() {
     }
   }, [lobbyCode])
 
-  async function refreshMembers(lobbyId: string) {
+  async function refreshMembers(lobbyId: string, loadProfiles: boolean) {
     const { data, error } = await supabase
       .from('lobby_members')
       .select('lobby_id,user_id,role,team,is_spymaster,is_ready,joined_at,last_seen_at')
@@ -179,22 +219,33 @@ export default function LobbyRoute() {
 
     const base = (data ?? []) as MemberRow[]
 
-    let profileMap = new Map<string, ProfileLite>()
-    try {
-      const profs = await getLobbyProfiles(lobbyId)
-      for (const p of profs) {
-        profileMap.set(String(p.user_id), {
-          display_name: (p.display_name ?? null) as string | null,
-          avatar_url: (p.avatar_url ?? null) as string | null
-        })
+        if (loadProfiles) {
+      let profileMap = new Map<string, ProfileLite>()
+      try {
+        const profs = await getLobbyProfiles(lobbyId)
+        for (const p of profs) {
+          profileMap.set(String(p.user_id), {
+            display_name: (p.display_name ?? null) as string | null,
+            avatar_url: (p.avatar_url ?? null) as string | null
+          })
+        }
+      } catch (err) {
+        console.warn('[lobby] get_lobby_profiles failed, using fallbacks:', err)
+        profileMap = new Map()
       }
-    } catch (err) {
-      console.warn('[lobby] get_lobby_profiles failed, using fallbacks:', err)
-      profileMap = new Map()
+
+      const merged = base.map((m) => ({ ...m, profiles: profileMap.get(m.user_id) ?? null }))
+      setMembers(merged)
+      return
     }
 
-    const merged = base.map((m) => ({ ...m, profiles: profileMap.get(m.user_id) ?? null }))
-    setMembers(merged)
+    // keep whatever profiles we already had (no extra rpc call)
+    setMembers((prev) => {
+      const prevProfiles = new Map<string, ProfileLite | null>()
+      for (const p of prev) prevProfiles.set(p.user_id, p.profiles ?? null)
+      return base.map((m) => ({ ...m, profiles: prevProfiles.get(m.user_id) ?? null }))
+    })
+
   }
 
   useEffect(() => {
@@ -206,11 +257,20 @@ export default function LobbyRoute() {
         setError(null)
         if (!lobbyCode) throw new Error('Missing lobby code')
 
-        if (spectate) {
-          await joinLobbyAsSpectator(lobbyCode)
+              const guardKey = `oneclue_join_guard:${spectate ? 'spectator' : 'player'}:${lobbyCode.trim().toUpperCase()}`
+        const now = Date.now()
+        const last = Number(sessionStorage.getItem(guardKey) ?? '0')
+        if (now - last < 2500) {
+          console.debug('[lobby] join guard: skipping duplicate join')
         } else {
-          await joinLobby(lobbyCode)
+          sessionStorage.setItem(guardKey, String(now))
+          if (spectate) {
+            await joinLobbyAsSpectator(lobbyCode)
+          } else {
+            await joinLobby(lobbyCode)
+          }
         }
+
 
         // store for auto-rejoin + role
         try {
@@ -231,7 +291,7 @@ export default function LobbyRoute() {
         setMyUserId(uid)
         setIsOwner(uid !== null && uid === l.owner_id)
 
-        await refreshMembers(l.id)
+        await refreshMembers(l.id, true)
         setState('ready')
       } catch (err) {
         console.error('[lobby] load failed:', err)
@@ -248,107 +308,55 @@ export default function LobbyRoute() {
   }, [lobbyCode, spectate])
 
   // Realtime
+   // Realtime
   useEffect(() => {
     if (!lobby?.id) return
+
+    let cancelled = false
 
     const channel = supabase
       .channel(`lobby_${lobby.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobby.id}` }, async () => {
-        await refreshMembers(lobby.id)
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lobbies', filter: `id=eq.${lobby.id}` }, async () => {
-        const updated = await getLobbyByCode(lobbyCode)
-        setLobby(updated)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobby.id}` },
+        async (payload) => {
+          if (cancelled) return
 
-        if (autoNavRef.current) return
-
-        if (updated.status === 'closed') {
-          autoNavRef.current = true
-          navigate('/', { replace: true })
-          return
-        }
-
-        if (updated.status === 'in_game') {
-          try {
-            const gid = await loadLatestLobbyGameId(updated.id)
-            if (gid) {
-              autoNavRef.current = true
-              navigate(`/game/${gid}`, { replace: true })
+          // ignore heartbeat-only updates (last_seen_at)
+          if (payload.eventType === 'UPDATE') {
+            const n = payload.new as any
+            const o = payload.old as any
+            if (
+              n &&
+              o &&
+              n.user_id === o.user_id &&
+              n.team === o.team &&
+              n.role === o.role &&
+              n.is_spymaster === o.is_spymaster &&
+              n.is_ready === o.is_ready &&
+              n.joined_at === o.joined_at &&
+              n.last_seen_at !== o.last_seen_at
+            ) {
+              setMembers((prev) =>
+                prev.map((m) => (m.user_id === n.user_id ? { ...m, last_seen_at: n.last_seen_at } : m))
+              )
+              return
             }
-          } catch (err) {
-            console.error('[lobby] latest game lookup failed:', err)
           }
+
+          // only reload profiles when someone joins/leaves
+          const needsProfiles = payload.eventType === 'INSERT' || payload.eventType === 'DELETE'
+          await refreshMembers(lobby.id, needsProfiles)
         }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'games', filter: `lobby_id=eq.${lobby.id}` }, async () => {
-        if (autoNavRef.current) return
-        if (lobby.status !== 'in_game') return
-        try {
-          const gid = await loadLatestLobbyGameId(lobby.id)
-          if (gid) {
-            autoNavRef.current = true
-            navigate(`/game/${gid}`, { replace: true })
-          }
-        } catch (err) {
-          console.error('[lobby] games realtime lookup failed:', err)
-        }
-      })
+      )
       .subscribe()
 
     return () => {
+      cancelled = true
       void supabase.removeChannel(channel)
     }
-  }, [lobby?.id, lobby?.status, lobbyCode, navigate])
+  }, [lobby?.id])
 
-  useEffect(() => {
-    autoNavRef.current = false
-  }, [lobbyCode])
-
-  // Heartbeat
-  useEffect(() => {
-    if (!lobby?.id) return
-    if (!myUserId) return
-
-    const tick = async () => {
-      if (document.hidden) return
-      try {
-        await supabase
-          .from('lobby_members')
-          .update({ last_seen_at: new Date().toISOString() })
-          .eq('lobby_id', lobby.id)
-          .eq('user_id', myUserId)
-      } catch {
-        // ignore
-      }
-    }
-
-    void tick()
-
-    const t = window.setInterval(() => {
-      void tick()
-    }, HEARTBEAT_MS)
-
-    return () => {
-      window.clearInterval(t)
-    }
-  }, [lobby?.id, myUserId])
-
-  useEffect(() => {
-    if (!lobby?.id) return
-    if (lobby.status !== 'in_game') return
-    if (autoNavRef.current) return
-
-    ;(async () => {
-      try {
-        const gid = await loadLatestLobbyGameId(lobby.id)
-        if (!gid) return
-        autoNavRef.current = true
-        navigate(`/game/${gid}`, { replace: true })
-      } catch (err) {
-        console.error('[lobby] initial in_game navigation failed:', err)
-      }
-    })()
-  }, [lobby?.id, lobby?.status, navigate])
 
   const playable = members.filter((m) => m.role === 'owner' || m.role === 'player')
   const redSpy = playable.filter((m) => m.team === 'red' && m.is_spymaster).length
@@ -366,17 +374,18 @@ export default function LobbyRoute() {
   async function handleSetTeam(targetUserId: string, team: 'red' | 'blue') {
     if (!lobby) return
     try {
-      setBusy(`Moving to ${team}â€¦`)
+      setBusy(`Moving to ${team}…`)
       const { error } = await supabase.rpc('set_member_team', {
         p_lobby_id: lobby.id,
         p_user_id: targetUserId,
         p_team: team
       })
       if (error) throw error
-      await refreshMembers(lobby.id)
+      await refreshMembers(lobby.id, false)
     } catch (err) {
       console.error('[lobby] set_member_team failed:', err)
-      alert(supaErr(err))
+      addToast(supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -385,7 +394,7 @@ export default function LobbyRoute() {
   async function handleToggleSpymaster(targetUserId: string, makeSpymaster: boolean) {
     if (!lobby) return
     try {
-      setBusy(makeSpymaster ? 'Making spymasterâ€¦' : 'Making operativeâ€¦')
+      setBusy(makeSpymaster ? 'Making spymaster…' : 'Making operative…')
 
       const { error } = await supabase.rpc('set_member_spymaster', {
         p_lobby_id: lobby.id,
@@ -394,10 +403,11 @@ export default function LobbyRoute() {
       })
 
       if (error) throw error
-      await refreshMembers(lobby.id)
+      await refreshMembers(lobby.id, false)
     } catch (err) {
       console.error('[lobby] set_member_spymaster failed:', err)
-      alert(supaErr(err))
+      addToast(supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -406,12 +416,13 @@ export default function LobbyRoute() {
   async function handleStartGame() {
     if (!lobby) return
     try {
-      setBusy('Starting gameâ€¦')
+      setBusy('Starting game…')
       const gameId = await startGame(lobby.id)
       navigate(`/game/${gameId}`)
     } catch (err) {
       console.error('[lobby] start game failed:', err)
-      alert(supaErr(err))
+      addToast(supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -428,7 +439,7 @@ export default function LobbyRoute() {
     const next = !(mine.is_ready ?? false)
 
     try {
-      setBusy(next ? 'Setting readyâ€¦' : 'Setting not readyâ€¦')
+      setBusy(next ? 'Setting ready…' : 'Setting not ready…')
       const { error } = await supabase
         .from('lobby_members')
         .update({ is_ready: next })
@@ -436,10 +447,11 @@ export default function LobbyRoute() {
         .eq('user_id', myUserId)
 
       if (error) throw error
-      await refreshMembers(lobby.id)
+      await refreshMembers(lobby.id, false)
     } catch (err) {
       console.error('[lobby] toggle ready failed:', err)
-      alert(supaErr(err))
+      addToast(supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -449,11 +461,16 @@ export default function LobbyRoute() {
     if (!lobby) return
     if (!myUserId) return
 
-    const ok = window.confirm('Leave this lobby?')
-    if (!ok) return
+    setLeaveConfirmOpen(true)
+    return
+  }
+
+  async function doLeaveLobbyConfirmed() {
+    if (!lobby) return
+    if (!myUserId) return
 
     try {
-      setBusy('Leavingâ€¦')
+      setBusy('Leaving…')
 
       const { error } = await supabase.from('lobby_members').delete().eq('lobby_id', lobby.id).eq('user_id', myUserId)
       if (error) throw error
@@ -464,7 +481,7 @@ export default function LobbyRoute() {
       navigate('/', { replace: true })
     } catch (err) {
       console.error('[lobby] leave failed:', err)
-      alert(supaErr(err))
+      addToast(supaErr(err), 'error')
     } finally {
       setBusy(null)
     }
@@ -502,6 +519,9 @@ export default function LobbyRoute() {
 
   function renderMemberCard(member: MemberRow, index: number, tone: 'red' | 'blue' | 'neutral') {
     const pill = statusPill(member.last_seen_at)
+    const avatar = avatarForMember(member)
+    const fallbackAvatar = fallbackAvatarFor(member.team, `${member.user_id}:fallback`)
+    const toneGlow = tone === 'red' ? '0 0 0 1px rgba(255,95,95,0.35), 0 16px 30px rgba(20,0,0,0.35)' : tone === 'blue' ? '0 0 0 1px rgba(90,140,255,0.38), 0 16px 30px rgba(0,10,26,0.4)' : '0 0 0 1px rgba(255,255,255,0.18), 0 16px 30px rgba(0,0,0,0.34)'
     const toneBorder =
       tone === 'red'
         ? '1px solid rgba(255,95,95,0.34)'
@@ -522,16 +542,33 @@ export default function LobbyRoute() {
           borderRadius: 14,
           border: toneBorder,
           background: toneBg,
-          boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.42), 0 8px 24px rgba(0,0,0,0.35)',
+          boxShadow: `inset 0 0 0 1px rgba(0,0,0,0.42), ${toneGlow}`,
           padding: 12,
           display: 'grid',
-          gap: 10
+          gap: 10,
+          position: 'relative',
+          overflow: 'hidden'
         }}
+        className="lobbyMemberCard"
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start' }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index)}</div>
-            <div style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.72 }}>{shortUserId(member.user_id)}</div>
+          <div style={{ minWidth: 0, display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div className="lobbyMemberAvatarWrap">
+              <img
+                className="lobbyMemberAvatar"
+                src={avatar}
+                alt={`${displayNameFor(member, index)} avatar`}
+                onError={(e) => {
+                  const img = e.currentTarget
+                  if (img.src.endsWith(fallbackAvatar)) return
+                  img.src = fallbackAvatar
+                }}
+              />
+            </div>
+            <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index)}</div>
+              <div style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.72 }}>{shortUserId(member.user_id)}</div>
+            </div>
           </div>
 
           <div
@@ -582,8 +619,115 @@ export default function LobbyRoute() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'radial-gradient(900px 520px at 50% 10%, rgba(255,255,255,0.08), rgba(0,0,0,0) 60%), #000', color: '#fff', padding: 16 }}>
+    <div className="lobbyScene">
       <style>{`
+        .lobbyScene{
+          min-height:100vh;
+          color:#fff;
+          padding:16px;
+          background:
+            radial-gradient(1200px 500px at 50% -10%, rgba(255,255,255,0.14), transparent 62%),
+            radial-gradient(900px 420px at 14% 10%, rgba(82,142,255,0.18), transparent 58%),
+            radial-gradient(900px 420px at 88% 12%, rgba(255,98,98,0.12), transparent 58%),
+            linear-gradient(180deg, #06080f, #030407 72%);
+        }
+        .lobbyShell{
+          width:min(1180px, 100%);
+          margin:0 auto;
+          border-radius:24px;
+          border:1px solid rgba(255,255,255,.11);
+          background:
+            linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.01)),
+            rgba(4,6,10,.68);
+          box-shadow: 0 28px 90px rgba(0,0,0,.76);
+          padding:14px;
+          backdrop-filter: blur(2px);
+        }
+        .lobbyTopbar{
+          display:flex;
+          gap:8px;
+          flex-wrap:wrap;
+          margin-bottom:12px;
+          padding:6px;
+          border-radius:14px;
+          border:1px solid rgba(255,255,255,.09);
+          background: rgba(255,255,255,.03);
+        }
+        .lobbyPanel{
+          border-radius:16px;
+          border:1px solid rgba(255,255,255,0.12);
+          background:
+            linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.02)),
+            rgba(0,0,0,.31);
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,.44), 0 12px 34px rgba(0,0,0,.34);
+          padding:14px;
+        }
+        .lobbyMetaTitle{
+          font-size:12px;
+          letter-spacing:.14em;
+          text-transform:uppercase;
+          opacity:.72;
+          font-weight:900;
+        }
+        .lobbyCodeRow{
+          margin-top:8px;
+          display:flex;
+          align-items:center;
+          gap:10px;
+          flex-wrap:wrap;
+        }
+        .lobbyCode{
+          font-size:34px;
+          font-weight:1000;
+          letter-spacing:.1em;
+        }
+        .lobbyMetaLine{
+          margin-top:7px;
+          opacity:.9;
+        }
+        .lobbyActionsRow{
+          margin-top:12px;
+          display:flex;
+          gap:8px;
+          flex-wrap:wrap;
+        }
+        .lobbyStatusPill{
+          padding:5px 10px;
+          border-radius:999px;
+          border:1px solid rgba(255,255,255,.18);
+          font-size:12px;
+          font-weight:900;
+          text-transform:uppercase;
+        }
+        .lobbyStatusPill.open{ background: rgba(90,180,120,.16); }
+        .lobbyStatusPill.in_game{ background: rgba(90,140,255,.18); }
+        .lobbyStatusPill.closed{ background: rgba(255,120,120,.16); }
+        .lobbyNotice{
+          padding:7px 10px;
+          border-radius:999px;
+          border:1px solid rgba(255,255,255,0.16);
+          background:rgba(255,255,255,.08);
+          font-size:12px;
+        }
+        .lobbySetupStats{
+          margin-top:10px;
+          display:grid;
+          gap:7px;
+          opacity:.93;
+        }
+        .lobbyHint{
+          margin-top:10px;
+          opacity:.78;
+          font-size:13px;
+        }
+        .lobbyInfoStrip{
+          margin-top:12px;
+          padding:11px;
+          border-radius:12px;
+          border:1px solid rgba(255,255,255,0.14);
+          background:rgba(255,255,255,0.05);
+          opacity:0.9;
+        }
         .lobby-grid-main{
           display:grid;
           grid-template-columns: 1fr 1fr;
@@ -595,24 +739,174 @@ export default function LobbyRoute() {
           gap: 12px;
           margin-top: 12px;
         }
+        .lobbyCol{
+          border-radius:16px;
+          padding:12px;
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,.42), 0 12px 32px rgba(0,0,0,.34);
+        }
+        .lobbyColTitle{
+          font-weight:1000;
+          margin-bottom:10px;
+          letter-spacing:.02em;
+        }
+        .lobbyCol.red{
+          border:1px solid rgba(255,95,95,0.35);
+          background:linear-gradient(180deg, rgba(255,95,95,.14), rgba(0,0,0,.30));
+        }
+        .lobbyCol.blue{
+          border:1px solid rgba(90,140,255,0.38);
+          background:linear-gradient(180deg, rgba(90,140,255,.16), rgba(0,0,0,.31));
+        }
+        .lobbyCol.neutral{
+          border:1px solid rgba(255,255,255,0.16);
+          background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(0,0,0,.28));
+        }
+        .lobbyRows{
+          display:grid;
+          gap:8px;
+        }
+        .lobbyMemberCard::after{
+          content:'';
+          position:absolute;
+          inset:0;
+          pointer-events:none;
+          background: linear-gradient(120deg, rgba(255,255,255,0.12), transparent 26%, transparent 70%, rgba(255,255,255,0.08));
+          opacity:.34;
+        }
+        .lobbyMemberAvatarWrap{
+          width:52px;
+          height:52px;
+          border-radius:14px;
+          padding:2px;
+          background: linear-gradient(135deg, rgba(120,255,255,0.8), rgba(120,120,255,0.28));
+          box-shadow: 0 0 0 1px rgba(255,255,255,0.2), 0 8px 18px rgba(0,0,0,0.45);
+          flex: 0 0 auto;
+        }
+        .lobbyMemberAvatar{
+          width:100%;
+          height:100%;
+          display:block;
+          object-fit:cover;
+          border-radius:12px;
+          border:1px solid rgba(255,255,255,0.18);
+          background: rgba(0,0,0,0.35);
+        }
+        .lobbyMuted{
+          opacity:.7;
+        }
+        .lobbyLoading{
+          padding:12px;
+          opacity:.9;
+        }
+        .lobbyError{
+          padding:12px;
+          border-radius:12px;
+          border:1px solid rgba(255,90,90,0.50);
+          background:rgba(255,60,60,0.08);
+        }
         @media (max-width: 980px){
+          .lobbyScene{ padding:10px; }
           .lobby-grid-main{ grid-template-columns: 1fr; }
           .lobby-teams{ grid-template-columns: 1fr; }
+          .lobbyCode{ font-size:30px; }
+        }
+        @media (max-width: 560px){
+          .lobbyShell{ padding:10px; border-radius:18px; }
+          .lobbyTopbar{ padding:4px; }
+          .lobbyCode{ font-size:26px; }
         }
       `}</style>
-
+      {/* Toasts */}
       <div
+        aria-live="polite"
         style={{
-          width: 'min(1180px, 100%)',
-          margin: '0 auto',
-          borderRadius: 24,
-          border: '1px solid rgba(255,255,255,0.10)',
-          background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.72)',
-          padding: 14
+          position: 'fixed',
+          top: 12,
+          right: 12,
+          zIndex: 999999,
+          display: 'grid',
+          gap: 8,
+          width: 360,
+          maxWidth: 'calc(100vw - 24px)'
         }}
       >
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.14)',
+              background:
+                t.tone === 'error'
+                  ? 'rgba(255,90,90,0.14)'
+                  : t.tone === 'success'
+                    ? 'rgba(40,190,120,0.14)'
+                    : 'rgba(255,255,255,0.08)',
+              color: 'rgba(245,248,255,0.96)',
+              boxShadow: '0 12px 30px rgba(0,0,0,0.45)',
+              fontWeight: 800,
+              fontSize: 13
+            }}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
+      {leaveConfirmOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 999998,
+            background: 'rgba(0,0,0,0.65)',
+            display: 'grid',
+            placeItems: 'center',
+            padding: 16
+          }}
+        >
+          <div
+            style={{
+              width: 'min(420px, 100%)',
+              borderRadius: 16,
+              border: '1px solid rgba(255,255,255,0.14)',
+              background: 'rgba(0,0,0,0.55)',
+              boxShadow: '0 24px 80px rgba(0,0,0,0.72)',
+              padding: 14
+            }}
+          >
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>Leave lobby?</div>
+            <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 12 }}>You can join again with the lobby code.</div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setLeaveConfirmOpen(false)}
+                disabled={busy !== null}
+                style={btnBase}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setLeaveConfirmOpen(false)
+                  await doLeaveLobbyConfirmed()
+                }}
+                disabled={busy !== null}
+                style={{ ...btnBase, borderColor: 'rgba(255,120,120,0.35)' }}
+              >
+                Leave
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="lobbyShell">
+        <div className="lobbyTopbar">
           <button onClick={() => navigate('/')} style={btnBase}>Home</button>
           <button onClick={() => navigate(`/settings/${lobbyCode}`)} style={btnBase}>Settings</button>
           <button onClick={() => navigate('/profile')} style={btnBase}>Profile</button>
@@ -621,10 +915,10 @@ export default function LobbyRoute() {
           </button>
         </div>
 
-        {state === 'loading' && <div style={{ padding: 12, opacity: 0.9 }}>Joining and loading...</div>}
+        {state === 'loading' && <div className="lobbyLoading">Joining and loading...</div>}
 
         {state === 'error' && (
-          <div style={{ padding: 12, borderRadius: 12, border: '1px solid rgba(255,90,90,0.50)', background: 'rgba(255,60,60,0.08)' }}>
+          <div className="lobbyError">
             Error: {error}
           </div>
         )}
@@ -632,33 +926,33 @@ export default function LobbyRoute() {
         {state === 'ready' && lobby && (
           <>
             <div className="lobby-grid-main">
-              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.28)', padding: 14 }}>
-                <div style={{ fontSize: 12, letterSpacing: '.14em', textTransform: 'uppercase', opacity: 0.72, fontWeight: 900 }}>Lobby</div>
-                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 30, fontWeight: 1000, letterSpacing: '.08em' }}>{lobby.code}</div>
-                  <span style={{ padding: '5px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.16)', background: lobby.status === 'open' ? 'rgba(90,180,120,0.16)' : lobby.status === 'in_game' ? 'rgba(90,140,255,0.18)' : 'rgba(255,120,120,0.16)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase' }}>
+              <div className="lobbyPanel">
+                <div className="lobbyMetaTitle">Lobby</div>
+                <div className="lobbyCodeRow">
+                  <div className="lobbyCode">{lobby.code}</div>
+                  <span className={`lobbyStatusPill ${lobby.status}`}>
                     {lobby.status}
                   </span>
                 </div>
 
-                <div style={{ marginTop: 8, opacity: 0.92 }}>
+                <div className="lobbyMetaLine">
                   You: <b>{myRow ? displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id)) : '-'}</b> . team <b>{myTeamLabel}</b> . role <b>{myGameRoleLabel}</b>
                 </div>
-                <div style={{ marginTop: 4, opacity: 0.84 }}>
+                <div className="lobbyMetaLine">
                   Owner: <b>{isOwner ? 'you' : 'other player'}</b> . Ready: <b>{readyCount}</b>/<b>{playableCount}</b>
                 </div>
-                {amSpectator && <div style={{ marginTop: 8, opacity: 0.84 }}>You are spectating. Team actions are disabled.</div>}
+                {amSpectator && <div className="lobbyMetaLine">You are spectating. Team actions are disabled.</div>}
 
-                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div className="lobbyActionsRow">
                   <button onClick={() => copyText('code', lobby.code)} disabled={!lobby.code} style={btnBase}>Copy Code</button>
                   <button onClick={() => copyText('invite link', lobbyLink)} disabled={!lobbyLink} style={btnBase}>Copy Invite Link</button>
-                  {notice && <span style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.08)', fontSize: 12 }}>{notice}</span>}
+                  {notice && <span className="lobbyNotice">{notice}</span>}
                 </div>
               </div>
 
-              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.28)', padding: 14 }}>
-                <div style={{ fontSize: 12, letterSpacing: '.14em', textTransform: 'uppercase', opacity: 0.72, fontWeight: 900 }}>Game Setup</div>
-                <div style={{ marginTop: 8, display: 'grid', gap: 6, opacity: 0.92 }}>
+              <div className="lobbyPanel">
+                <div className="lobbyMetaTitle">Game Setup</div>
+                <div className="lobbySetupStats">
                   <div>Red Team: spymaster <b>{redSpy}</b>, operatives <b>{redOps}</b></div>
                   <div>Blue Team: spymaster <b>{blueSpy}</b>, operatives <b>{blueOps}</b></div>
                   {requireReady && <div>Ready required: <b>{readyOk ? 'ok' : 'not yet'}</b></div>}
@@ -689,7 +983,7 @@ export default function LobbyRoute() {
                 )}
 
                 {!canStart && (
-                  <div style={{ marginTop: 10, opacity: 0.78, fontSize: 13 }}>
+                  <div className="lobbyHint">
                     Need 1 spymaster + 1 operative per team{requireReady ? ' + everyone ready' : ''}.
                   </div>
                 )}
@@ -697,30 +991,30 @@ export default function LobbyRoute() {
             </div>
 
             <div className="lobby-teams">
-              <div style={{ borderRadius: 16, border: '1px solid rgba(255,95,95,0.35)', background: 'rgba(80,20,20,0.28)', padding: 12 }}>
-                <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(255,210,210,0.98)' }}>Red Team ({redMembers.length})</div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {redMembers.length === 0 ? <div style={{ opacity: 0.7 }}>No players assigned.</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
+              <div className="lobbyCol red">
+                <div className="lobbyColTitle">Red Team ({redMembers.length})</div>
+                <div className="lobbyRows">
+                  {redMembers.length === 0 ? <div className="lobbyMuted">No players assigned.</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
                 </div>
               </div>
 
-              <div style={{ borderRadius: 16, border: '1px solid rgba(90,140,255,0.38)', background: 'rgba(18,32,80,0.30)', padding: 12 }}>
-                <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(214,228,255,0.98)' }}>Blue Team ({blueMembers.length})</div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {blueMembers.length === 0 ? <div style={{ opacity: 0.7 }}>No players assigned.</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
+              <div className="lobbyCol blue">
+                <div className="lobbyColTitle">Blue Team ({blueMembers.length})</div>
+                <div className="lobbyRows">
+                  {blueMembers.length === 0 ? <div className="lobbyMuted">No players assigned.</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
                 </div>
               </div>
 
-              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(0,0,0,0.26)', padding: 12 }}>
-                <div style={{ fontWeight: 1000, marginBottom: 10 }}>Spectators ({spectators.length})</div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {spectators.length === 0 ? <div style={{ opacity: 0.7 }}>No spectators.</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
+              <div className="lobbyCol neutral">
+                <div className="lobbyColTitle">Spectators ({spectators.length})</div>
+                <div className="lobbyRows">
+                  {spectators.length === 0 ? <div className="lobbyMuted">No spectators.</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
                 </div>
               </div>
             </div>
 
             {lobby.status !== 'open' && (
-              <div style={{ marginTop: 12, padding: 10, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.05)', opacity: 0.9 }}>
+              <div className="lobbyInfoStrip">
                 Teams and roles are locked while lobby is not open.
               </div>
             )}

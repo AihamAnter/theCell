@@ -3,8 +3,17 @@ import { useNavigate } from 'react-router-dom'
 import HomePage from '../components/HomePage'
 import { supabase } from '../lib/supabaseClient'
 import { createLobby, joinLobby, joinLobbyAsSpectator, quickMatch } from '../lib/lobbies'
+import {
+  ensureSession,
+  getCurrentUser,
+  signInWithEmailPassword,
+  signOut,
+  upgradeAnonymousWithEmailPassword
+} from '../lib/auth'
 
 type LoadState = 'loading' | 'ready' | 'error'
+type ToastTone = 'info' | 'success' | 'error'
+type ToastItem = { id: string; text: string; tone: ToastTone }
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -60,7 +69,27 @@ export default function HomeRoute() {
 
   const [busy, setBusy] = useState<string | null>(null)
   const [lastLobbyCode, setLastLobbyCode] = useState<string>(() => readStr('oneclue_last_lobby_code'))
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const [authEmail, setAuthEmail] = useState<string | null>(null)
+  const [isAnonymousUser, setIsAnonymousUser] = useState<boolean>(true)
+
+
+  function addToast(text: string, tone: ToastTone = 'info', ms = 2600) {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setToasts((prev) => [...prev, { id, text, tone }].slice(-3))
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, ms)
+  }
+
   const [lastLobbyRole, setLastLobbyRole] = useState<string>(() => readStr('oneclue_last_lobby_role'))
+
+  async function refreshAuthSummary() {
+    const user = await getCurrentUser()
+    const isAnon = Boolean((user as any)?.is_anonymous)
+    setIsAnonymousUser(isAnon)
+    setAuthEmail(user?.email ?? null)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -73,6 +102,7 @@ export default function HomeRoute() {
         const { data, error: sessionErr } = await supabase.auth.getSession()
         if (sessionErr) throw sessionErr
         if (!data.session?.user?.id) throw new Error('No session')
+        await refreshAuthSummary()
 
         if (cancelled) return
         setState('ready')
@@ -97,6 +127,15 @@ export default function HomeRoute() {
     }
   }, [navigate, lastLobbyCode, lastLobbyRole])
 
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      void refreshAuthSummary()
+    })
+    return () => {
+      sub.subscription.unsubscribe()
+    }
+  }, [])
+
   const uiDisabled = busy !== null || state !== 'ready'
 
   async function handleCreate(mode: 'classic' | 'powers') {
@@ -113,7 +152,8 @@ export default function HomeRoute() {
       navigate(`/lobby/${lobbyCode}`)
     } catch (err) {
       console.error('[home] create failed:', err)
-      alert(err instanceof Error ? err.message : supaErr(err))
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -136,7 +176,8 @@ export default function HomeRoute() {
       navigate(`/lobby/${clean}`)
     } catch (err) {
       console.error('[home] join failed:', err)
-      alert(err instanceof Error ? err.message : supaErr(err))
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -159,7 +200,8 @@ export default function HomeRoute() {
       navigate(`/lobby/${clean}?spectate=1`)
     } catch (err) {
       console.error('[home] spectate failed:', err)
-      alert(err instanceof Error ? err.message : supaErr(err))
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+
     } finally {
       setBusy(null)
     }
@@ -179,7 +221,7 @@ export default function HomeRoute() {
       navigate(`/lobby/${res.lobbyCode}`)
     } catch (err) {
       console.error('[home] quick match failed:', err)
-      alert(err instanceof Error ? err.message : supaErr(err))
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
     } finally {
       setBusy(null)
     }
@@ -190,16 +232,65 @@ export default function HomeRoute() {
     clearKey('oneclue_last_lobby_role')
     setLastLobbyCode('')
     setLastLobbyRole('')
-    alert('Forgot last lobby.')
+    addToast('Forgot last lobby.', 'success')
+
   }
 
   function openSettings() {
     const code = (lastLobbyCode ?? '').trim()
     if (!code) {
-      alert('No recent lobby found. Join a lobby first.')
+      addToast('No recent lobby found. Join a lobby first.', 'info')
+
       return
     }
     navigate(`/settings/${code}`)
+  }
+
+  async function handleSignIn(email: string, password: string) {
+    if (uiDisabled) return
+    try {
+      setBusy('Signing in...')
+      await signInWithEmailPassword(email, password)
+      await refreshAuthSummary()
+      addToast('Signed in.', 'success')
+    } catch (err) {
+      console.error('[home] sign in failed:', err)
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleCreateAccount(email: string, password: string) {
+    if (uiDisabled) return
+    try {
+      setBusy('Creating account...')
+      const res = await upgradeAnonymousWithEmailPassword(email, password)
+      await refreshAuthSummary()
+      if (res.mode === 'upgrade') addToast('Guest account upgraded.', 'success')
+      else addToast('Account created. Check email if confirmation is enabled.', 'success')
+    } catch (err) {
+      console.error('[home] create account failed:', err)
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleLogout() {
+    if (uiDisabled) return
+    try {
+      setBusy('Logging out...')
+      await signOut()
+      await ensureSession()
+      await refreshAuthSummary()
+      addToast('Now playing as guest.', 'info')
+    } catch (err) {
+      console.error('[home] logout failed:', err)
+      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
+    } finally {
+      setBusy(null)
+    }
   }
 
   if (state === 'loading') {
@@ -242,6 +333,44 @@ export default function HomeRoute() {
 
   return (
     <>
+        {/* Toasts */}
+    <div
+      aria-live="polite"
+      style={{
+        position: 'fixed',
+        top: 12,
+        right: 12,
+        zIndex: 999999,
+        display: 'grid',
+        gap: 8,
+        width: 360,
+        maxWidth: 'calc(100vw - 24px)'
+      }}
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          style={{
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid rgba(255,255,255,0.14)',
+            background:
+              t.tone === 'error'
+                ? 'rgba(255,90,90,0.14)'
+                : t.tone === 'success'
+                  ? 'rgba(40,190,120,0.14)'
+                  : 'rgba(255,255,255,0.08)',
+            color: 'rgba(245,248,255,0.96)',
+            boxShadow: '0 12px 30px rgba(0,0,0,0.45)',
+            fontWeight: 800,
+            fontSize: 13
+          }}
+        >
+          {t.text}
+        </div>
+      ))}
+    </div>
+
       <HomePage
         onJoinLobby={handleJoin}
         onSpectateLobby={handleSpectate}
@@ -252,6 +381,13 @@ export default function HomeRoute() {
         lastLobbyCode={lastLobbyCode || null}
         onRejoinLast={() => navigate(lobbyUrl(lastLobbyCode, lastLobbyRole || null))}
         onForgetLast={handleForgetLast}
+        authEmail={authEmail}
+        isAnonymousUser={isAnonymousUser}
+        authBusy={Boolean(busy)}
+        onSignIn={handleSignIn}
+        onCreateAccount={handleCreateAccount}
+        onContinueAsGuest={() => addToast('Continuing as guest.', 'info')}
+        onLogout={handleLogout}
       />
 
       {busy && (

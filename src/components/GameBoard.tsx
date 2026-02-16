@@ -109,7 +109,7 @@ export default function GameBoard(props: Props) {
   // action locks / cooldowns
   const inFlightRef = useRef<{ clue: boolean; reveal: boolean; end: boolean }>({ clue: false, reveal: false, end: false })
   const lastRevealAtRef = useRef<number>(0)
-
+  const [confirmingCard, setConfirmingCard] = useState<GameCard | null>(null)
   // Toasts
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const toastTimeoutsRef = useRef<number[]>([])
@@ -159,14 +159,14 @@ export default function GameBoard(props: Props) {
   const isActive = status === 'active'
   const isSetup = status === 'setup'
   const isEnded = !isActive && !isSetup && Boolean(game)
-
   const myTeam = me?.team ?? null
   const turnTeam = (game?.current_turn_team ?? null) as Team | null
   const isMyTurn = Boolean(game && myTeam && turnTeam === myTeam)
-  const hasClue = game?.guesses_remaining !== null && game?.guesses_remaining !== undefined
-
+    const guessesRemaining = game?.guesses_remaining
+  const hasClue = guessesRemaining !== null && guessesRemaining !== undefined
+  const hasGuessesRemaining = typeof guessesRemaining === 'number' && guessesRemaining > 0
   const canGiveClue = Boolean(isActive && me?.isSpymaster && isMyTurn)
-  const canRevealBase = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
+  const canRevealBase = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasGuessesRemaining)
   const canEndTurnBase = Boolean(isActive && !me?.isSpymaster && isMyTurn && hasClue)
 
   const revealCooldownOk = Date.now() - lastRevealAtRef.current >= REVEAL_COOLDOWN_MS
@@ -218,9 +218,11 @@ export default function GameBoard(props: Props) {
     if (me?.isSpymaster) return null
     if (!isMyTurn) return 'Not your turn.'
     if (!hasClue) return 'Wait for your spymaster to give a clue.'
+    if (!hasGuessesRemaining) return 'No guesses remaining. End your turn.'
     if (!revealCooldownOk) return 'Wait a moment…'
     return null
-  }, [isActive, me?.isSpymaster, isMyTurn, hasClue, revealCooldownOk])
+  }, [isActive, me?.isSpymaster, isMyTurn, hasClue, hasGuessesRemaining, revealCooldownOk])
+
 
   // Event detection for toasts
   const prevGameRef = useRef<any>(null)
@@ -317,38 +319,49 @@ export default function GameBoard(props: Props) {
       setClueNumber(1)
     } catch (err) {
       console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to set clue')
+      addToast(err instanceof Error ? err.message : 'failed to set clue', 'danger')
     } finally {
       inFlightRef.current.clue = false
       setBusy(null)
     }
   }
 
-  async function doReveal(card: GameCard) {
-    if (!canRevealBase) return
-    if (!revealCooldownOk) return
+  async function doRevealNow(card: GameCard) {
     if (inFlightRef.current.reveal) return
-    if (card.revealed) return
-
-    if (confirmReveal) {
-      const ok = window.confirm(`Reveal "${card.word}"?`)
-      if (!ok) return
-    }
 
     try {
       inFlightRef.current.reveal = true
       lastRevealAtRef.current = Date.now()
-      setBusy('Revealing…')
+      setBusy('Revealing cardâ€¦')
       await actions.reveal(card.pos)
     } catch (err) {
       console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to reveal')
+      addToast(err instanceof Error ? err.message : 'failed to reveal card', 'danger')
     } finally {
       inFlightRef.current.reveal = false
       setBusy(null)
     }
   }
 
+async function doReveal(card: GameCard) {
+    if (!canRevealBase) return
+    if (!revealCooldownOk) return
+    if (inFlightRef.current.reveal) return
+    if (card.revealed) return
+
+    if (confirmReveal) {
+      setConfirmingCard(card)
+      return
+    }
+
+    await doRevealNow(card)
+  }
+
+
+
+
+
+  
   async function doEndTurn() {
     if (!canEndTurnBase) return
     if (inFlightRef.current.end) return
@@ -360,7 +373,7 @@ export default function GameBoard(props: Props) {
       addToast('Turn ended.', 'info')
     } catch (err) {
       console.error(err)
-      alert(err instanceof Error ? err.message : 'failed to end turn')
+      addToast(err instanceof Error ? err.message : 'failed to end turn', 'danger')
     } finally {
       inFlightRef.current.end = false
       setBusy(null)
@@ -406,6 +419,76 @@ export default function GameBoard(props: Props) {
           </div>
         ))}
       </div>
+
+      {/* Confirm modal */}
+      {confirmingCard && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 999998,
+            background: 'rgba(0,0,0,0.70)',
+            display: 'grid',
+            placeItems: 'center',
+            padding: 16
+          }}
+        >
+          <div
+            style={{
+              width: 'min(420px, 100%)',
+              borderRadius: 16,
+              border: '1px solid rgba(255,255,255,0.14)',
+              background: 'rgba(0,0,0,0.55)',
+              boxShadow: '0 24px 80px rgba(0,0,0,0.72)',
+              padding: 14
+            }}
+          >
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>Reveal this card?</div>
+            <div style={{ fontSize: 14, opacity: 0.9, marginBottom: 12 }}>{confirmingCard.word}</div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setConfirmingCard(null)}
+                disabled={busy !== null}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  background: 'rgba(255,255,255,0.06)',
+                  color: '#fff',
+                  fontWeight: 900,
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const c = confirmingCard
+                  setConfirmingCard(null)
+                  if (c) await doRevealNow(c)
+                }}
+                disabled={busy !== null}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  background: 'rgba(255,120,120,0.22)',
+                  color: '#fff',
+                  fontWeight: 900,
+                  cursor: 'pointer'
+                }}
+              >
+                Reveal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <button onClick={onBackToLobby}>Lobby</button>

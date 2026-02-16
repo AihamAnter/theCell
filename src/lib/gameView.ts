@@ -66,9 +66,9 @@ export type GameViewActions = {
 }
 
 const ENABLE_POLL_FALLBACK = true
-const POLL_MS = 1200
-const MEMBERS_POLL_MS = 6000
-const HEARTBEAT_MS = 10_000
+const POLL_MS = 2000
+const MEMBERS_POLL_MS = 10_000
+const HEARTBEAT_MS = 30_000
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -273,7 +273,27 @@ export function useGameView(gameIdRaw: string | null | undefined): { state: Game
           console.error('[useGameView] cards realtime refresh failed:', err)
         }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobbyId}` }, async () => {
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'lobby_members', filter: `lobby_id=eq.${lobbyId}` }, async (payload) => {
+        // ignore heartbeat-only updates (last_seen_at)
+        if (payload.eventType === 'UPDATE') {
+          const n = payload.new as any
+          const o = payload.old as any
+          if (
+            n &&
+            o &&
+            n.user_id === o.user_id &&
+            n.team === o.team &&
+            n.role === o.role &&
+            n.is_spymaster === o.is_spymaster &&
+            n.is_ready === o.is_ready &&
+            n.joined_at === o.joined_at &&
+            n.last_seen_at !== o.last_seen_at
+          ) {
+            setMembers((prev) => prev.map((m) => (m.user_id === n.user_id ? { ...m, last_seen_at: n.last_seen_at } : m)))
+            return
+          }
+        }
+
         try {
           const [mem, mine] = await Promise.all([loadMembers(lobbyId), loadMe(lobbyId)])
           setMembers(mem)
@@ -329,6 +349,7 @@ export function useGameView(gameIdRaw: string | null | undefined): { state: Game
   useEffect(() => {
     if (!ENABLE_POLL_FALLBACK) return
     if (!gameId) return
+    if (realtimeStatus === 'SUBSCRIBED') return
 
     const t = window.setInterval(async () => {
       if (document.hidden) return
@@ -349,11 +370,13 @@ export function useGameView(gameIdRaw: string | null | undefined): { state: Game
     return () => {
       window.clearInterval(t)
     }
-  }, [gameId])
+    }, [gameId, realtimeStatus])
+
 
   useEffect(() => {
     if (!ENABLE_POLL_FALLBACK) return
     if (!lobbyId) return
+    if (realtimeStatus === 'SUBSCRIBED') return
 
     const t = window.setInterval(async () => {
       if (document.hidden) return
@@ -374,7 +397,8 @@ export function useGameView(gameIdRaw: string | null | undefined): { state: Game
     return () => {
       window.clearInterval(t)
     }
-  }, [lobbyId])
+    }, [lobbyId, realtimeStatus])
+
 
   const sendClue = async (word: string, number: number) => {
     if (!gameId) throw new Error('Missing game id')

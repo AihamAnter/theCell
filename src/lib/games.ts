@@ -10,6 +10,7 @@ export type Game = {
   clue_word: string | null
   clue_number: number | null
   guesses_remaining: number | null
+  turn_started_at?: string | null
   red_remaining: number
   blue_remaining: number
   state: Record<string, unknown>
@@ -37,6 +38,7 @@ export type RevealResult = {
   current_turn: 'red' | 'blue'
   winning_team: 'red' | 'blue' | null
   guesses_remaining: number | null
+  turn_started_at?: string | null
   red_remaining: number
   blue_remaining: number
 }

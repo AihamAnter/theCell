@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { getMyProfile, updateMyProfile, type Profile } from '../lib/profile'
+import { getMostTeammate, getWinLossRatio, readPlayerStatsFromPreferences, type PlayerStats } from '../lib/playerStats'
 
 type Props = {
   onBackToHome: () => void
@@ -51,6 +52,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
   const [notice, setNotice] = useState<string | null>(null)
 
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [stats, setStats] = useState<PlayerStats | null>(null)
   const [email, setEmail] = useState<string>('')
 
   // Basic Info
@@ -100,6 +102,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
         const prefs = (p.preferences ?? {}) as ProfilePrefs
 
         setProfile(p)
+        setStats(readPlayerStatsFromPreferences(p.preferences))
         setDisplayName(p.display_name ?? '')
         setBio(p.bio ?? '')
         setAvatarUrl(p.avatar_url ?? '')
@@ -165,6 +168,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
 
       const updated = await getMyProfile()
       setProfile(updated)
+      setStats(readPlayerStatsFromPreferences(updated.preferences))
       setNotice('Saved')
       setState('ready')
     } catch (err) {
@@ -180,11 +184,11 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
     const p2 = window.prompt('Repeat new password:')
     if (!p2) return
     if (p1 !== p2) {
-      alert('Passwords do not match')
+      setNotice('Passwords do not match')
       return
     }
     if (p1.length < 8) {
-      alert('Password must be at least 8 characters')
+      setNotice('Password must be at least 8 characters')
       return
     }
 
@@ -195,7 +199,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       setNotice('Password updated')
     } catch (err) {
       console.error('[profile] change password failed:', err)
-      alert(err instanceof Error ? err.message : 'Failed to change password')
+      setNotice(err instanceof Error ? err.message : 'Failed to change password')
     }
   }
 
@@ -205,14 +209,14 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       if (error) throw error
       const s = data.session
       if (!s) {
-        alert('No active session')
+        setNotice('No active session')
         return
       }
       const exp = s.expires_at ? new Date(s.expires_at * 1000).toISOString() : 'unknown'
-      alert(`Signed in as: ${s.user?.email ?? 'unknown'}\nSession expires: ${exp}`)
+      setNotice(`Signed in as: ${s.user?.email ?? 'unknown'} | expires: ${exp}`)
     } catch (err) {
       console.error('[profile] session read failed:', err)
-      alert(err instanceof Error ? err.message : 'Failed to read session')
+      setNotice(err instanceof Error ? err.message : 'Failed to read session')
     }
   }
 
@@ -224,6 +228,9 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
     }
     downloadJson('oneclue-profile-export.json', payload)
   }
+
+  const mostTeammate = useMemo(() => (stats ? getMostTeammate(stats) : null), [stats])
+  const winLossRatio = useMemo(() => (stats ? getWinLossRatio(stats) : '0.00'), [stats])
 
   return (
     <div className="profileScene">
@@ -365,6 +372,37 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
             </section>
 
             <section className="profileCard">
+              <h2>Game Statistics</h2>
+              <div className="profileFields">
+                <label>
+                  Games Played
+                  <input value={String(stats?.games_played ?? 0)} disabled />
+                </label>
+                <label>
+                  Times Won
+                  <input value={String(stats?.times_won ?? 0)} disabled />
+                </label>
+                <label>
+                  Times Lost
+                  <input value={String(stats?.times_lost ?? 0)} disabled />
+                </label>
+                <label>
+                  Win/Loss Ratio
+                  <input value={winLossRatio} disabled />
+                </label>
+                <label className="isWide">
+                  Most Teammate
+                  <input
+                    value={
+                      mostTeammate ? `${mostTeammate.name} (${mostTeammate.games} games)` : 'No teammate data yet'
+                    }
+                    disabled
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section className="profileCard">
               <h2>Security</h2>
               <div className="profileBtnStack">
                 <button className="homeBtnGhost" type="button" onClick={handleChangePassword}>
@@ -373,7 +411,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
                 <button
                   className="homeBtnGhost"
                   type="button"
-                  onClick={() => alert('2FA needs Supabase MFA setup. If you want it, we can add it later with MFA enrollment APIs.')}
+                  onClick={() => setNotice('2FA needs Supabase MFA setup. We can add it later with MFA enrollment APIs.')}
                 >
                   Manage 2FA
                 </button>
@@ -396,7 +434,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
                   className="profileDanger"
                   type="button"
                   onClick={() =>
-                    alert(
+                    setNotice(
                       'Delete Account needs a server-side admin action (Supabase auth user deletion). If you want it, we can add an RPC/Edge Function later.'
                     )
                   }
