@@ -1,0 +1,136 @@
+{
+  "app": {
+    "connectingTitle": "Connecting…",
+    "connectingBody": "Signing you in.",
+    "connectionErrorTitle": "Connection error"
+  },
+  "home": {
+    "title": "OneClue Lobby Hub",
+    "subtitle": "Classic 5x5 Social Deduction",
+    "desc": "Run private matches, jump into quick games, or spectate friends live.",
+    "badges": {
+      "grid": "25 Card Grid",
+      "strategy": "Team Strategy",
+      "sync": "Live Lobby Sync"
+    },
+    "account": {
+      "title": "Account",
+      "signedInAs": "Signed in as {{email}}",
+      "logout": "Logout",
+      "guestOrSignIn": "Play as guest or sign in with email/password to keep long-term stats.",
+      "emailPh": "EMAIL",
+      "passwordPh": "PASSWORD",
+      "login": "Login",
+      "createAccount": "Create Account",
+      "continueGuest": "Continue as Guest"
+    },
+    "lastLobby": {
+      "title": "Last Lobby",
+      "code": "Code: {{code}}",
+      "rejoin": "Rejoin",
+      "forget": "Forget",
+      "forgotToast": "Forgot last lobby."
+    },
+    "join": {
+      "title": "Join Lobby",
+      "desc": "Enter a lobby code to join your team instantly.",
+      "roomCodePh": "ROOM CODE",
+      "joinBtn": "Join",
+      "spectateBtn": "Spectate Lobby"
+    },
+    "create": {
+      "title": "Create Lobby",
+      "desc": "Create a new room and invite players with a code.",
+      "classic": "Create Classic Lobby",
+      "powers": "Create Powers Lobby"
+    },
+    "other": {
+      "title": "Other Options",
+      "desc": "Quick actions for players who want to jump in fast.",
+      "quickMatch": "Quick Match",
+      "openSettings": "Open Settings",
+      "profile": "Profile"
+    },
+    "toasts": {
+      "noRecentLobby": "No recent lobby found.\nJoin a lobby first.",
+      "signedIn": "Signed in.",
+      "creatingAccount": "Account created.\nCheck email if confirmation is enabled.",
+      "guestUpgraded": "Guest account upgraded.",
+      "nowGuest": "Now playing as guest.",
+      "continueGuest": "Continuing as guest."
+    },
+    "busy": {
+      "creatingLobby": "Creating lobby…",
+      "creatingPowersLobby": "Creating powers lobby…",
+      "joiningLobby": "Joining lobby…",
+      "joiningSpectator": "Joining as spectator…",
+      "findingMatch": "Finding a match…",
+      "signingIn": "Signing in...",
+      "creatingAccount": "Creating account...",
+      "loggingOut": "Logging out..."
+    },
+    "errors": {
+      "couldNotStart": "Could not start the app.",
+      "reload": "Reload",
+      "loading": "Loading…"
+    }
+  },
+  "profile": {
+    "title": "Profile",
+    "subtitle": "Account Center",
+    "desc": "Manage identity, game preferences, privacy, and account security.",
+    "backToLobby": "Back To Lobby",
+    "returnToGame": "Return To Game",
+    "loading": "Loading…",
+    "error": "Error",
+    "saved": "Saved",
+    "sections": {
+      "basic": "Basic Info",
+      "prefs": "Game Preferences",
+      "privacy": "Privacy",
+      "notifs": "Notifications",
+      "stats": "Game Statistics",
+      "security": "Security",
+      "actions": "Account Actions"
+    },
+    "fields": {
+      "displayName": "Display Name",
+      "username": "Username",
+      "email": "Email",
+      "avatarUrl": "Avatar URL",
+      "bio": "Bio",
+      "language": "Language",
+      "region": "Region",
+      "preferredTeam": "Preferred Team",
+      "darkPanels": "Use Dark Panels",
+      "publicProfile": "Public Profile",
+      "showOnline": "Show Online Status",
+      "allowInvites": "Allow Lobby Invites",
+      "emailUpdates": "Email Updates",
+      "gameAlerts": "Game Alerts",
+      "gamesPlayed": "Games Played",
+      "timesWon": "Times Won",
+      "timesLost": "Times Lost",
+      "ratio": "Win/Loss Ratio",
+      "mostTeammate": "Most Teammate"
+    },
+    "placeholders": {
+      "yourName": "Your name",
+      "nickname": "nickname",
+      "avatar": "https://…",
+      "bio": "Short bio"
+    },
+    "buttons": {
+      "changePassword": "Change Password",
+      "manage2fa": "Manage 2FA",
+      "activeSession": "Active Session",
+      "save": "Save Changes",
+      "saving": "Saving…",
+      "export": "Export Data",
+      "delete": "Delete Account"
+    },
+    "statsText": {
+      "noTeammate": "No teammate data yet"
+    }
+  }
+}

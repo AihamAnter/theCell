@@ -1,0 +1,136 @@
+{
+  "app": {
+    "connectingTitle": "جاري الاتصال…",
+    "connectingBody": "جاري تسجيل الدخول.",
+    "connectionErrorTitle": "خطأ في الاتصال"
+  },
+  "home": {
+    "title": "مركز لوبي OneClue",
+    "subtitle": "كلاسيك 5×5 — لعبة اجتماعية",
+    "desc": "أنشئ مباريات خاصة، ادخل بسرعة، أو شاهد أصدقاءك مباشرة.",
+    "badges": {
+      "grid": "شبكة 25 بطاقة",
+      "strategy": "استراتيجية فريق",
+      "sync": "تزامن مباشر"
+    },
+    "account": {
+      "title": "الحساب",
+      "signedInAs": "مسجل دخول باسم {{email}}",
+      "logout": "تسجيل الخروج",
+      "guestOrSignIn": "العب كضيف أو سجّل بالبريد/كلمة مرور لحفظ الإحصائيات.",
+      "emailPh": "البريد الإلكتروني",
+      "passwordPh": "كلمة المرور",
+      "login": "تسجيل الدخول",
+      "createAccount": "إنشاء حساب",
+      "continueGuest": "المتابعة كضيف"
+    },
+    "lastLobby": {
+      "title": "آخر لوبي",
+      "code": "الكود: {{code}}",
+      "rejoin": "دخول من جديد",
+      "forget": "نسيان",
+      "forgotToast": "تم نسيان آخر لوبي."
+    },
+    "join": {
+      "title": "الدخول إلى لوبي",
+      "desc": "اكتب كود اللوبي للدخول مباشرة.",
+      "roomCodePh": "كود الغرفة",
+      "joinBtn": "دخول",
+      "spectateBtn": "مشاهدة اللوبي"
+    },
+    "create": {
+      "title": "إنشاء لوبي",
+      "desc": "أنشئ غرفة جديدة وادعُ اللاعبين بالكود.",
+      "classic": "إنشاء لوبي كلاسيك",
+      "powers": "إنشاء لوبي قدرات"
+    },
+    "other": {
+      "title": "خيارات أخرى",
+      "desc": "خيارات سريعة لمن يريد الدخول بسرعة.",
+      "quickMatch": "مباراة سريعة",
+      "openSettings": "الإعدادات",
+      "profile": "الملف الشخصي"
+    },
+    "toasts": {
+      "noRecentLobby": "لا يوجد لوبي حديث.\nادخل لوبي أولاً.",
+      "signedIn": "تم تسجيل الدخول.",
+      "creatingAccount": "تم إنشاء الحساب.\nافحص بريدك إذا كان تأكيد البريد مفعّل.",
+      "guestUpgraded": "تم ترقية حساب الضيف.",
+      "nowGuest": "أنت الآن تلعب كضيف.",
+      "continueGuest": "تمت المتابعة كضيف."
+    },
+    "busy": {
+      "creatingLobby": "جاري إنشاء اللوبي…",
+      "creatingPowersLobby": "جاري إنشاء لوبي القدرات…",
+      "joiningLobby": "جاري الدخول للّوبي…",
+      "joiningSpectator": "جاري الدخول كمشاهد…",
+      "findingMatch": "جاري البحث عن مباراة…",
+      "signingIn": "جاري تسجيل الدخول...",
+      "creatingAccount": "جاري إنشاء حساب...",
+      "loggingOut": "جاري تسجيل الخروج..."
+    },
+    "errors": {
+      "couldNotStart": "لم يتم تشغيل التطبيق.",
+      "reload": "إعادة تحميل",
+      "loading": "جاري التحميل…"
+    }
+  },
+  "profile": {
+    "title": "الملف الشخصي",
+    "subtitle": "مركز الحساب",
+    "desc": "تحكم بالهوية وتفضيلات اللعبة والخصوصية وأمان الحساب.",
+    "backToLobby": "عودة للّوبي",
+    "returnToGame": "عودة للعبة",
+    "loading": "جاري التحميل…",
+    "error": "خطأ",
+    "saved": "تم الحفظ",
+    "sections": {
+      "basic": "معلومات أساسية",
+      "prefs": "تفضيلات اللعبة",
+      "privacy": "الخصوصية",
+      "notifs": "الإشعارات",
+      "stats": "إحصائيات اللعبة",
+      "security": "الأمان",
+      "actions": "إجراءات الحساب"
+    },
+    "fields": {
+      "displayName": "الاسم المعروض",
+      "username": "اسم المستخدم",
+      "email": "البريد",
+      "avatarUrl": "رابط الصورة",
+      "bio": "نبذة",
+      "language": "اللغة",
+      "region": "المنطقة",
+      "preferredTeam": "الفريق المفضل",
+      "darkPanels": "استخدام لوحات داكنة",
+      "publicProfile": "ملف عام",
+      "showOnline": "إظهار حالة الاتصال",
+      "allowInvites": "السماح بدعوات اللوبي",
+      "emailUpdates": "تحديثات بالبريد",
+      "gameAlerts": "تنبيهات اللعبة",
+      "gamesPlayed": "عدد الألعاب",
+      "timesWon": "مرات الفوز",
+      "timesLost": "مرات الخسارة",
+      "ratio": "نسبة فوز/خسارة",
+      "mostTeammate": "أكثر زميل لعب"
+    },
+    "placeholders": {
+      "yourName": "اسمك",
+      "nickname": "لقب",
+      "avatar": "https://…",
+      "bio": "نبذة قصيرة"
+    },
+    "buttons": {
+      "changePassword": "تغيير كلمة المرور",
+      "manage2fa": "إدارة 2FA",
+      "activeSession": "الجلسة الحالية",
+      "save": "حفظ التغييرات",
+      "saving": "جاري الحفظ…",
+      "export": "تصدير البيانات",
+      "delete": "حذف الحساب"
+    },
+    "statsText": {
+      "noTeammate": "لا توجد بيانات بعد"
+    }
+  }
+}

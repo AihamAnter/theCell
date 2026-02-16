@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import i18n from '../i18n'
 import { getMyProfile, updateMyProfile, type Profile } from '../lib/profile'
 import { getMostTeammate, getWinLossRatio, readPlayerStatsFromPreferences, type PlayerStats } from '../lib/playerStats'
 
@@ -63,6 +64,8 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
 
   // Preferences
   const [language, setLanguage] = useState<'Arabic' | 'English'>('English')
+  void i18n.changeLanguage(language === 'Arabic' ? 'ar' : 'en')
+
   const [region, setRegion] = useState<'Middle East' | 'Europe' | 'North America'>('Middle East')
   const [teamColor, setTeamColor] = useState<'Blue' | 'Red' | 'Auto'>('Auto')
   const [darkPanels, setDarkPanels] = useState(true)
@@ -109,6 +112,10 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
 
         setUsername(asStr(prefs.username, ''))
         setLanguage((asStr(prefs.language, 'English') as any) === 'Arabic' ? 'Arabic' : 'English')
+        void i18n.changeLanguage(
+  (asStr(prefs.language, 'English') as any) === 'Arabic' ? 'ar' : 'en'
+)
+
         setRegion((asStr(prefs.region, 'Middle East') as any) || 'Middle East')
         setTeamColor((asStr(prefs.teamColor, 'Auto') as any) || 'Auto')
 
@@ -308,7 +315,15 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
               <div className="profileFields">
                 <label>
                   Language
-                  <select value={language} onChange={(e) => setLanguage(e.target.value as any)}>
+                  <select
+  value={language}
+  onChange={(e) => {
+    const v = e.target.value as any
+    setLanguage(v)
+    void i18n.changeLanguage(v === 'Arabic' ? 'ar' : 'en')
+  }}
+>
+                    
                     <option>Arabic</option>
                     <option>English</option>
                   </select>

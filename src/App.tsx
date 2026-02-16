@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { supabase } from './lib/supabaseClient'
 import { ensureSession } from './lib/auth'
 import { joinLobby, joinLobbyAsSpectator } from './lib/lobbies'
@@ -235,6 +236,8 @@ function RouteSyncGuard() {
 }
 
 export default function App() {
+  const { t } = useTranslation()
+
   const [bootState, setBootState] = useState<BootState>('booting')
   const [bootError, setBootError] = useState<string | null>(null)
 
@@ -269,8 +272,8 @@ export default function App() {
   if (bootState === 'booting') {
     return (
       <div style={{ padding: 16 }}>
-        <h3>Connecting…</h3>
-        <p>Signing you in.</p>
+        <h3>{t('app.connectingTitle')}</h3>
+        <p>{t('app.connectingBody')}</p>
       </div>
     )
   }
@@ -278,7 +281,7 @@ export default function App() {
   if (bootState === 'error') {
     return (
       <div style={{ padding: 16 }}>
-        <h3>Connection error</h3>
+        <h3>{t('app.connectionErrorTitle')}</h3>
         <p>{bootError}</p>
       </div>
     )
