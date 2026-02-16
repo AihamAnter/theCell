@@ -2,12 +2,27 @@ import { useState } from 'react'
 
 type HomePageProps = {
   onJoinLobby: (code: string) => void
+  onSpectateLobby: (code: string) => void
   onCreateLobby: (mode: 'classic' | 'powers') => void
+  onQuickMatch: () => void
   onOpenProfile: () => void
   onOpenSettings: () => void
+  lastLobbyCode?: string | null
+  onRejoinLast?: () => void
+  onForgetLast?: () => void
 }
 
-export default function HomePage({ onJoinLobby, onCreateLobby, onOpenProfile, onOpenSettings }: HomePageProps) {
+export default function HomePage({
+  onJoinLobby,
+  onSpectateLobby,
+  onCreateLobby,
+  onQuickMatch,
+  onOpenProfile,
+  onOpenSettings,
+  lastLobbyCode,
+  onRejoinLast,
+  onForgetLast
+}: HomePageProps) {
   const [lobbyCode, setLobbyCode] = useState<string>('')
 
   return (
@@ -18,6 +33,23 @@ export default function HomePage({ onJoinLobby, onCreateLobby, onOpenProfile, on
           <h1 className="homeTitle">Lobby</h1>
           <p className="homeSubtitle">Join a room, create one, or pick another option to start playing.</p>
         </div>
+
+        {lastLobbyCode && onRejoinLast && onForgetLast && (
+          <section className="homeCard" aria-label="Last lobby" style={{ marginBottom: 14 }}>
+            <h2>Last Lobby</h2>
+            <p>
+              Code: <b>{lastLobbyCode}</b>
+            </p>
+            <div className="homeBtnStack">
+              <button className="homeBtnPrimary" type="button" onClick={onRejoinLast}>
+                Rejoin
+              </button>
+              <button className="homeBtnGhost" type="button" onClick={onForgetLast}>
+                Forget
+              </button>
+            </div>
+          </section>
+        )}
 
         <div className="homeGrid">
           <section className="homeCard" aria-label="Join lobby">
@@ -41,6 +73,17 @@ export default function HomePage({ onJoinLobby, onCreateLobby, onOpenProfile, on
                 Join
               </button>
             </div>
+
+            <div style={{ marginTop: 10 }}>
+              <button
+                className="homeBtnGhost"
+                type="button"
+                onClick={() => onSpectateLobby(lobbyCode.trim())}
+                disabled={!lobbyCode.trim()}
+              >
+                Spectate Lobby
+              </button>
+            </div>
           </section>
 
           <section className="homeCard" aria-label="Create lobby">
@@ -57,14 +100,17 @@ export default function HomePage({ onJoinLobby, onCreateLobby, onOpenProfile, on
           </section>
 
           <section className="homeCard" aria-label="Other options">
-            <h2>Other</h2>
-            <p>Manage your profile or change settings.</p>
+            <h2>Other Options</h2>
+            <p>Quick actions for players who want to jump in fast.</p>
             <div className="homeBtnStack">
-              <button className="homeBtnPrimary" type="button" onClick={onOpenProfile}>
-                Profile
+              <button className="homeBtnGhost" type="button" onClick={onQuickMatch}>
+                Quick Match
               </button>
               <button className="homeBtnGhost" type="button" onClick={onOpenSettings}>
-                Settings
+                Open Settings
+              </button>
+              <button className="homeBtnGhost" type="button" onClick={onOpenProfile}>
+                Profile
               </button>
             </div>
           </section>

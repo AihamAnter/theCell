@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import HomePage from '../components/HomePage'
 import { supabase } from '../lib/supabaseClient'
-import { createLobby, joinLobby } from '../lib/lobbies'
+import { createLobby, joinLobby, joinLobbyAsSpectator, quickMatch } from '../lib/lobbies'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -44,16 +45,22 @@ function clearKey(key: string) {
   }
 }
 
+function lobbyUrl(code: string, role: string | null): string {
+  const clean = (code ?? '').trim().toUpperCase()
+  if (!clean) return '/'
+  if ((role ?? '').toLowerCase() === 'spectator') return `/lobby/${clean}?spectate=1`
+  return `/lobby/${clean}`
+}
+
 export default function HomeRoute() {
   const navigate = useNavigate()
 
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
 
-  const [joinCode, setJoinCode] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
-
-  const lastLobbyCode = useMemo(() => readStr('oneclue_last_lobby_code'), [])
+  const [lastLobbyCode, setLastLobbyCode] = useState<string>(() => readStr('oneclue_last_lobby_code'))
+  const [lastLobbyRole, setLastLobbyRole] = useState<string>(() => readStr('oneclue_last_lobby_role'))
 
   useEffect(() => {
     let cancelled = false
@@ -67,13 +74,13 @@ export default function HomeRoute() {
         if (sessionErr) throw sessionErr
         if (!data.session?.user?.id) throw new Error('No session')
 
+        if (cancelled) return
         setState('ready')
 
-        // auto rejoin if we have one
-        if (lastLobbyCode) {
-          // small delay so UI paints
+        const code = (lastLobbyCode ?? '').trim()
+        if (code) {
           setTimeout(() => {
-            if (!cancelled) navigate(`/lobby/${lastLobbyCode}`)
+            if (!cancelled) navigate(lobbyUrl(code, lastLobbyRole || null))
           }, 10)
         }
       } catch (err) {
@@ -88,13 +95,21 @@ export default function HomeRoute() {
     return () => {
       cancelled = true
     }
-  }, [navigate, lastLobbyCode])
+  }, [navigate, lastLobbyCode, lastLobbyRole])
 
-  async function handleCreate() {
+  const uiDisabled = busy !== null || state !== 'ready'
+
+  async function handleCreate(mode: 'classic' | 'powers') {
+    if (uiDisabled) return
     try {
-      setBusy('Creating lobby…')
-      const { lobbyCode } = await createLobby()
+      setBusy(mode === 'powers' ? 'Creating powers lobby…' : 'Creating lobby…')
+      const { lobbyCode } = await createLobby({ settings: { mode } })
+
       writeStr('oneclue_last_lobby_code', lobbyCode)
+      writeStr('oneclue_last_lobby_role', 'player')
+      setLastLobbyCode(lobbyCode)
+      setLastLobbyRole('player')
+
       navigate(`/lobby/${lobbyCode}`)
     } catch (err) {
       console.error('[home] create failed:', err)
@@ -104,15 +119,21 @@ export default function HomeRoute() {
     }
   }
 
-  async function handleJoin() {
-    const code = joinCode.trim().toUpperCase()
-    if (!code) return
+  async function handleJoin(code: string) {
+    if (uiDisabled) return
+    const clean = (code ?? '').trim().toUpperCase()
+    if (!clean) return
 
     try {
       setBusy('Joining lobby…')
-      await joinLobby(code)
-      writeStr('oneclue_last_lobby_code', code)
-      navigate(`/lobby/${code}`)
+      await joinLobby(clean)
+
+      writeStr('oneclue_last_lobby_code', clean)
+      writeStr('oneclue_last_lobby_role', 'player')
+      setLastLobbyCode(clean)
+      setLastLobbyRole('player')
+
+      navigate(`/lobby/${clean}`)
     } catch (err) {
       console.error('[home] join failed:', err)
       alert(err instanceof Error ? err.message : supaErr(err))
@@ -121,82 +142,117 @@ export default function HomeRoute() {
     }
   }
 
+  async function handleSpectate(code: string) {
+    if (uiDisabled) return
+    const clean = (code ?? '').trim().toUpperCase()
+    if (!clean) return
+
+    try {
+      setBusy('Joining as spectator…')
+      await joinLobbyAsSpectator(clean)
+
+      writeStr('oneclue_last_lobby_code', clean)
+      writeStr('oneclue_last_lobby_role', 'spectator')
+      setLastLobbyCode(clean)
+      setLastLobbyRole('spectator')
+
+      navigate(`/lobby/${clean}?spectate=1`)
+    } catch (err) {
+      console.error('[home] spectate failed:', err)
+      alert(err instanceof Error ? err.message : supaErr(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleQuickMatch() {
+    if (uiDisabled) return
+    try {
+      setBusy('Finding a match…')
+      const res = await quickMatch({ mode: 'classic' })
+
+      writeStr('oneclue_last_lobby_code', res.lobbyCode)
+      writeStr('oneclue_last_lobby_role', 'player')
+      setLastLobbyCode(res.lobbyCode)
+      setLastLobbyRole('player')
+
+      navigate(`/lobby/${res.lobbyCode}`)
+    } catch (err) {
+      console.error('[home] quick match failed:', err)
+      alert(err instanceof Error ? err.message : supaErr(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   function handleForgetLast() {
     clearKey('oneclue_last_lobby_code')
+    clearKey('oneclue_last_lobby_role')
+    setLastLobbyCode('')
+    setLastLobbyRole('')
     alert('Forgot last lobby.')
-    // don't navigate; user stays on home
+  }
+
+  function openSettings() {
+    const code = (lastLobbyCode ?? '').trim()
+    if (!code) {
+      alert('No recent lobby found. Join a lobby first.')
+      return
+    }
+    navigate(`/settings/${code}`)
   }
 
   if (state === 'loading') {
     return (
-      <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16 }}>
-        <h2 style={{ marginTop: 0 }}>OneClue</h2>
-        <p>Loading…</p>
+      <div className="homeScene">
+        <div className="homeFrame">
+          <div className="homeHeader">
+            <div className="homeEyebrow">Classic 5x5</div>
+            <h1 className="homeTitle">OneClue</h1>
+            <p className="homeSubtitle">Loading…</p>
+          </div>
+        </div>
       </div>
     )
   }
 
   if (state === 'error') {
     return (
-      <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16 }}>
-        <h2 style={{ marginTop: 0 }}>OneClue</h2>
-        <div style={{ padding: 12, border: '1px solid #ff4d4f', borderRadius: 10 }}>
-          <div style={{ fontWeight: 900 }}>Error</div>
-          <div style={{ marginTop: 6, opacity: 0.9 }}>{error}</div>
+      <div className="homeScene">
+        <div className="homeFrame">
+          <div className="homeHeader">
+            <div className="homeEyebrow">Classic 5x5</div>
+            <h1 className="homeTitle">OneClue</h1>
+            <p className="homeSubtitle">Could not start the app.</p>
+          </div>
+
+          <section className="homeCard" aria-label="Error">
+            <h2>Error</h2>
+            <p style={{ minHeight: 0 }}>{error ?? 'Unknown error'}</p>
+            <div className="homeBtnStack">
+              <button className="homeBtnPrimary" type="button" onClick={() => window.location.reload()}>
+                Reload
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     )
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16 }}>
-      <h2 style={{ marginTop: 0 }}>OneClue</h2>
-
-      {lastLobbyCode && (
-        <div style={{ marginTop: 10, padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
-          <div style={{ fontWeight: 900 }}>Last lobby</div>
-          <div style={{ marginTop: 6, opacity: 0.9 }}>
-            Code: <b>{lastLobbyCode}</b>
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={() => navigate(`/lobby/${lastLobbyCode}`)}>Rejoin</button>
-            <button onClick={handleForgetLast}>Forget</button>
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 12, padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
-        <div style={{ fontWeight: 900 }}>Create</div>
-        <div style={{ marginTop: 10 }}>
-          <button onClick={handleCreate} disabled={busy !== null}>
-            Create lobby
-          </button>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 12, padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
-        <div style={{ fontWeight: 900 }}>Join</div>
-        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value)}
-            placeholder="LOBBY CODE"
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: '1px solid #2a2a35',
-              background: '#0d0d14',
-              color: '#fff',
-              fontFamily: 'monospace',
-              letterSpacing: 1,
-              width: 200
-            }}
-          />
-          <button onClick={handleJoin} disabled={busy !== null || joinCode.trim().length === 0}>
-            Join
-          </button>
-        </div>
-      </div>
+    <>
+      <HomePage
+        onJoinLobby={handleJoin}
+        onSpectateLobby={handleSpectate}
+        onCreateLobby={handleCreate}
+        onQuickMatch={handleQuickMatch}
+        onOpenProfile={() => navigate('/profile')}
+        onOpenSettings={openSettings}
+        lastLobbyCode={lastLobbyCode || null}
+        onRejoinLast={() => navigate(lobbyUrl(lastLobbyCode, lastLobbyRole || null))}
+        onForgetLast={handleForgetLast}
+      />
 
       {busy && (
         <div
@@ -210,9 +266,18 @@ export default function HomeRoute() {
             zIndex: 9999
           }}
         >
-          <div style={{ padding: 16, borderRadius: 12, border: '1px solid #2a2a35', background: '#111118' }}>{busy}</div>
+          <div
+            style={{
+              padding: 16,
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,.12)',
+              background: 'rgba(0,0,0,.55)'
+            }}
+          >
+            {busy}
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

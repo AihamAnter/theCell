@@ -74,8 +74,54 @@ export async function joinLobby(code: string): Promise<string> {
   return data
 }
 
+export async function joinLobbyAsSpectator(code: string): Promise<string> {
+  const clean = code.trim().toUpperCase()
+  if (!clean) throw new Error('Lobby code required')
+
+  const { data, error } = await supabase.rpc('join_lobby_spectator', { p_code: clean })
+  if (error) throw formatRpcError('[join_lobby_spectator]', error)
+
+  if (typeof data !== 'string') throw new Error('[join_lobby_spectator] returned invalid data')
+  return data
+}
+
+export async function quickMatch(input?: {
+  mode?: 'classic' | 'powers'
+}): Promise<{ lobbyId: string; lobbyCode: string; created: boolean }> {
+  const mode = input?.mode ?? 'classic'
+
+  const { data, error } = await supabase.rpc('quick_match', {
+    p_mode: mode
+  })
+
+  if (error) throw formatRpcError('[quick_match]', error)
+
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row || typeof row !== 'object') throw new Error('[quick_match] returned empty data')
+
+  const outLobbyId = (row as Record<string, unknown>).out_lobby_id
+  const outLobbyCode = (row as Record<string, unknown>).out_lobby_code
+  const outCreated = (row as Record<string, unknown>).out_created
+
+  if (typeof outLobbyId !== 'string' || typeof outLobbyCode !== 'string') {
+    throw new Error('[quick_match] returned invalid data')
+  }
+
+  return {
+    lobbyId: outLobbyId,
+    lobbyCode: outLobbyCode,
+    created: Boolean(outCreated)
+  }
+}
+
 export async function getLobbyByCode(code: string): Promise<Lobby> {
   const { data, error } = await supabase.from('lobbies').select('*').eq('code', code).single()
+  if (error) throw error
+  return data as Lobby
+}
+
+export async function getLobbyById(lobbyId: string): Promise<Lobby> {
+  const { data, error } = await supabase.from('lobbies').select('*').eq('id', lobbyId).single()
   if (error) throw error
   return data as Lobby
 }

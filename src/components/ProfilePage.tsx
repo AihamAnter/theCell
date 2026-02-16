@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../lib/supabaseClient'
 import { getMyProfile, updateMyProfile, type Profile } from '../lib/profile'
 
 type Props = {
@@ -6,28 +7,117 @@ type Props = {
   onBackToGame: () => void
 }
 
-type LoadState = 'idle' | 'loading' | 'ready' | 'saving' | 'error'
+type LoadState = 'loading' | 'ready' | 'saving' | 'error'
+
+type ProfilePrefs = {
+  username?: string
+  language?: string
+  region?: string
+  teamColor?: 'Blue' | 'Red' | 'Auto' | string
+  showOnline?: boolean
+  allowInvites?: boolean
+  publicProfile?: boolean
+  emailUpdates?: boolean
+  gameAlerts?: boolean
+  darkPanels?: boolean
+}
+
+function asBool(v: unknown, fallback: boolean): boolean {
+  return typeof v === 'boolean' ? v : fallback
+}
+
+function asStr(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v : fallback
+}
+
+function downloadJson(filename: string, obj: unknown) {
+  const text = JSON.stringify(obj, null, 2)
+  const blob = new Blob([text], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+
+  URL.revokeObjectURL(url)
+}
 
 export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
-  const [state, setState] = useState<LoadState>('idle')
+  const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [email, setEmail] = useState<string>('')
+
+  // Basic Info
   const [displayName, setDisplayName] = useState('')
+  const [username, setUsername] = useState('')
   const [bio, setBio] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState('')
+
+  // Preferences
+  const [language, setLanguage] = useState<'Arabic' | 'English'>('English')
+  const [region, setRegion] = useState<'Middle East' | 'Europe' | 'North America'>('Middle East')
+  const [teamColor, setTeamColor] = useState<'Blue' | 'Red' | 'Auto'>('Auto')
+  const [darkPanels, setDarkPanels] = useState(true)
+
+  // Privacy
+  const [publicProfile, setPublicProfile] = useState(false)
+  const [showOnline, setShowOnline] = useState(true)
+  const [allowInvites, setAllowInvites] = useState(true)
+
+  // Notifications
+  const [emailUpdates, setEmailUpdates] = useState(true)
+  const [gameAlerts, setGameAlerts] = useState(true)
+
+  const canSave = useMemo(() => {
+    if (state !== 'ready') return false
+    return displayName.trim().length > 0
+  }, [state, displayName])
 
   useEffect(() => {
     let cancelled = false
-    setState('loading')
-    setError(null)
 
     ;(async () => {
       try {
+        setState('loading')
+        setError(null)
+        setNotice(null)
+
+        const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+        if (sessionErr) throw sessionErr
+
+        const sessionEmail = sessionData.session?.user?.email ?? ''
+        if (!cancelled) setEmail(sessionEmail)
+
         const p = await getMyProfile()
         if (cancelled) return
+
+        const prefs = (p.preferences ?? {}) as ProfilePrefs
+
         setProfile(p)
         setDisplayName(p.display_name ?? '')
         setBio(p.bio ?? '')
+        setAvatarUrl(p.avatar_url ?? '')
+
+        setUsername(asStr(prefs.username, ''))
+        setLanguage((asStr(prefs.language, 'English') as any) === 'Arabic' ? 'Arabic' : 'English')
+        setRegion((asStr(prefs.region, 'Middle East') as any) || 'Middle East')
+        setTeamColor((asStr(prefs.teamColor, 'Auto') as any) || 'Auto')
+
+        setDarkPanels(asBool(prefs.darkPanels, true))
+
+        setPublicProfile(asBool(prefs.publicProfile, false))
+        setShowOnline(asBool(prefs.showOnline, true))
+        setAllowInvites(asBool(prefs.allowInvites, true))
+
+        setEmailUpdates(asBool(prefs.emailUpdates, true))
+        setGameAlerts(asBool(prefs.gameAlerts, true))
+
         setState('ready')
       } catch (err) {
         console.error('[profile] load failed:', err)
@@ -43,15 +133,39 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
     }
   }, [])
 
-  const canSave = state === 'ready' && displayName.trim().length > 0
-
   async function handleSave() {
+    if (!profile) return
+    if (!canSave) return
+
     try {
       setState('saving')
       setError(null)
-      await updateMyProfile({ display_name: displayName, bio })
+      setNotice(null)
+
+      const nextPrefs: ProfilePrefs = {
+        ...(profile.preferences ?? {}),
+        username: username.trim() || undefined,
+        language,
+        region,
+        teamColor,
+        darkPanels,
+        publicProfile,
+        showOnline,
+        allowInvites,
+        emailUpdates,
+        gameAlerts
+      }
+
+      await updateMyProfile({
+        display_name: displayName,
+        bio,
+        avatar_url: avatarUrl,
+        preferences: nextPrefs as Record<string, unknown>
+      })
+
       const updated = await getMyProfile()
       setProfile(updated)
+      setNotice('Saved')
       setState('ready')
     } catch (err) {
       console.error('[profile] save failed:', err)
@@ -60,57 +174,240 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
     }
   }
 
+  async function handleChangePassword() {
+    const p1 = window.prompt('New password:')
+    if (!p1) return
+    const p2 = window.prompt('Repeat new password:')
+    if (!p2) return
+    if (p1 !== p2) {
+      alert('Passwords do not match')
+      return
+    }
+    if (p1.length < 8) {
+      alert('Password must be at least 8 characters')
+      return
+    }
+
+    try {
+      setNotice(null)
+      const { error } = await supabase.auth.updateUser({ password: p1 })
+      if (error) throw error
+      setNotice('Password updated')
+    } catch (err) {
+      console.error('[profile] change password failed:', err)
+      alert(err instanceof Error ? err.message : 'Failed to change password')
+    }
+  }
+
+  async function handleActiveSession() {
+    try {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+      const s = data.session
+      if (!s) {
+        alert('No active session')
+        return
+      }
+      const exp = s.expires_at ? new Date(s.expires_at * 1000).toISOString() : 'unknown'
+      alert(`Signed in as: ${s.user?.email ?? 'unknown'}\nSession expires: ${exp}`)
+    } catch (err) {
+      console.error('[profile] session read failed:', err)
+      alert(err instanceof Error ? err.message : 'Failed to read session')
+    }
+  }
+
+  function handleExport() {
+    const payload = {
+      exported_at: new Date().toISOString(),
+      email,
+      profile: profile ?? null
+    }
+    downloadJson('oneclue-profile-export.json', payload)
+  }
+
   return (
-    <div style={{ minHeight: '100vh', padding: 16, background: '#0b0b0f', color: '#fff' }}>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button onClick={onBackToHome}>Back Home</button>
-        <button onClick={onBackToGame}>Back Game</button>
-      </div>
+    <div className="profileScene">
+      <div className="profileFrame">
+        <header className="profileHeader">
+          <div>
+            <div className="profileEyebrow">Account Center</div>
+            <h1 className="profileTitle">Profile</h1>
+            <p className="profileSubtitle">Manage identity, game preferences, privacy, and account security.</p>
+            {profile && (
+              <p className="profileSubtitle" style={{ marginTop: 8, opacity: 0.85 }}>
+                User ID: <span style={{ fontFamily: 'monospace' }}>{profile.user_id}</span>
+              </p>
+            )}
+            {notice && (
+              <p className="profileSubtitle" style={{ marginTop: 8, opacity: 0.95 }}>
+                {notice}
+              </p>
+            )}
+          </div>
 
-      <h2 style={{ marginBottom: 8 }}>Profile</h2>
-
-      {state === 'loading' && <p>Loading…</p>}
-
-      {error && (
-        <div style={{ marginTop: 12, padding: 12, border: '1px solid #ff4d4f', borderRadius: 8 }}>
-          <p style={{ margin: 0 }}>Error: {error}</p>
-        </div>
-      )}
-
-      {profile && (
-        <div style={{ marginTop: 12, padding: 12, border: '1px solid #2a2a35', borderRadius: 8 }}>
-          <p style={{ marginTop: 0, opacity: 0.8 }}>
-            User ID: <span style={{ fontFamily: 'monospace' }}>{profile.user_id}</span>
-          </p>
-
-          <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Display name</span>
-              <input
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Your name"
-                style={{ padding: 10, borderRadius: 8, border: '1px solid #2a2a35', background: '#111118', color: '#fff' }}
-              />
-            </label>
-
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Bio</span>
-              <textarea
-                value={bio}
-                onChange={(e) => setBio(e.target.value)}
-                placeholder="Short bio"
-                rows={4}
-                style={{ padding: 10, borderRadius: 8, border: '1px solid #2a2a35', background: '#111118', color: '#fff' }}
-              />
-            </label>
-
-            <button onClick={handleSave} disabled={!canSave} style={{ padding: 10, borderRadius: 8 }}>
-              {state === 'saving' ? 'Saving…' : 'Save'}
+          <div className="profileHeaderActions">
+            <button className="homeBtnGhost" type="button" onClick={onBackToHome}>
+              Back To Lobby
+            </button>
+            <button className="homeBtnPrimary" type="button" onClick={onBackToGame}>
+              Return To Game
             </button>
           </div>
-        </div>
-      )}
+        </header>
+
+        {state === 'loading' && <p className="profileSubtitle">Loading…</p>}
+
+        {state === 'error' && error && (
+          <div style={{ padding: 12, borderRadius: 12, border: '1px solid rgba(226,59,59,.35)', background: 'rgba(0,0,0,.25)' }}>
+            <p style={{ margin: 0, fontWeight: 900 }}>Error</p>
+            <p style={{ margin: '6px 0 0 0', opacity: 0.9 }}>{error}</p>
+          </div>
+        )}
+
+        {profile && (
+          <div className="profileGrid">
+            <section className="profileCard">
+              <h2>Basic Info</h2>
+              <div className="profileFields">
+                <label>
+                  Display Name
+                  <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name" />
+                </label>
+
+                <label>
+                  Username
+                  <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="nickname" />
+                </label>
+
+                <label>
+                  Email
+                  <input value={email} disabled placeholder="email" />
+                </label>
+
+                <label>
+                  Avatar URL
+                  <input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />
+                </label>
+
+                <label className="isWide">
+                  Bio
+                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} placeholder="Short bio" />
+                </label>
+              </div>
+            </section>
+
+            <section className="profileCard">
+              <h2>Game Preferences</h2>
+              <div className="profileFields">
+                <label>
+                  Language
+                  <select value={language} onChange={(e) => setLanguage(e.target.value as any)}>
+                    <option>Arabic</option>
+                    <option>English</option>
+                  </select>
+                </label>
+
+                <label>
+                  Region
+                  <select value={region} onChange={(e) => setRegion(e.target.value as any)}>
+                    <option>Middle East</option>
+                    <option>Europe</option>
+                    <option>North America</option>
+                  </select>
+                </label>
+
+                <label>
+                  Preferred Team
+                  <select value={teamColor} onChange={(e) => setTeamColor(e.target.value as any)}>
+                    <option>Blue</option>
+                    <option>Red</option>
+                    <option>Auto</option>
+                  </select>
+                </label>
+
+                <label className="toggleRow">
+                  <span>Use Dark Panels</span>
+                  <input type="checkbox" checked={darkPanels} onChange={(e) => setDarkPanels(e.target.checked)} />
+                </label>
+              </div>
+            </section>
+
+            <section className="profileCard">
+              <h2>Privacy</h2>
+              <div className="profileToggles">
+                <label className="toggleRow">
+                  <span>Public Profile</span>
+                  <input type="checkbox" checked={publicProfile} onChange={(e) => setPublicProfile(e.target.checked)} />
+                </label>
+                <label className="toggleRow">
+                  <span>Show Online Status</span>
+                  <input type="checkbox" checked={showOnline} onChange={(e) => setShowOnline(e.target.checked)} />
+                </label>
+                <label className="toggleRow">
+                  <span>Allow Lobby Invites</span>
+                  <input type="checkbox" checked={allowInvites} onChange={(e) => setAllowInvites(e.target.checked)} />
+                </label>
+              </div>
+            </section>
+
+            <section className="profileCard">
+              <h2>Notifications</h2>
+              <div className="profileToggles">
+                <label className="toggleRow">
+                  <span>Email Updates</span>
+                  <input type="checkbox" checked={emailUpdates} onChange={(e) => setEmailUpdates(e.target.checked)} />
+                </label>
+                <label className="toggleRow">
+                  <span>Game Alerts</span>
+                  <input type="checkbox" checked={gameAlerts} onChange={(e) => setGameAlerts(e.target.checked)} />
+                </label>
+              </div>
+            </section>
+
+            <section className="profileCard">
+              <h2>Security</h2>
+              <div className="profileBtnStack">
+                <button className="homeBtnGhost" type="button" onClick={handleChangePassword}>
+                  Change Password
+                </button>
+                <button
+                  className="homeBtnGhost"
+                  type="button"
+                  onClick={() => alert('2FA needs Supabase MFA setup. If you want it, we can add it later with MFA enrollment APIs.')}
+                >
+                  Manage 2FA
+                </button>
+                <button className="homeBtnGhost" type="button" onClick={handleActiveSession}>
+                  Active Session
+                </button>
+              </div>
+            </section>
+
+            <section className="profileCard">
+              <h2>Account Actions</h2>
+              <div className="profileBtnStack">
+                <button className="homeBtnPrimary" type="button" onClick={handleSave} disabled={!canSave || state === 'saving'}>
+                  {state === 'saving' ? 'Saving…' : 'Save Changes'}
+                </button>
+                <button className="homeBtnGhost" type="button" onClick={handleExport}>
+                  Export Data
+                </button>
+                <button
+                  className="profileDanger"
+                  type="button"
+                  onClick={() =>
+                    alert(
+                      'Delete Account needs a server-side admin action (Supabase auth user deletion). If you want it, we can add an RPC/Edge Function later.'
+                    )
+                  }
+                >
+                  Delete Account
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

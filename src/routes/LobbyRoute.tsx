@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
-import { getLobbyByCode, joinLobby, type Lobby } from '../lib/lobbies'
+import { getLobbyByCode, joinLobby, joinLobbyAsSpectator, type Lobby } from '../lib/lobbies'
 import { startGame } from '../lib/games'
 import { getLobbyProfiles } from '../lib/publicProfiles'
 
@@ -86,10 +86,30 @@ function statusPill(lastSeen: string | null | undefined): { text: string; bg: st
   return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
 }
 
+async function loadLatestLobbyGameId(lobbyId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('games')
+    .select('id,status,created_at')
+    .eq('lobby_id', lobbyId)
+    .in('status', ['setup', 'active'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+
+  if (error) throw error
+  const row = Array.isArray(data) ? data[0] : null
+  return row && typeof row.id === 'string' ? row.id : null
+}
+
 export default function LobbyRoute() {
   const { code } = useParams()
+  const location = useLocation()
   const navigate = useNavigate()
   const lobbyCode = useMemo(() => (code ?? '').trim().toUpperCase(), [code])
+
+  const spectate = useMemo(() => {
+    const sp = new URLSearchParams(location.search).get('spectate')
+    return sp === '1' || sp === 'true' || sp === 'yes'
+  }, [location.search])
 
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
@@ -102,6 +122,7 @@ export default function LobbyRoute() {
 
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
+  const autoNavRef = useRef(false)
 
   const [requireReady, setRequireReady] = useState<boolean>(() => readBool('oneclue_require_ready_start', false))
   useEffect(() => {
@@ -185,11 +206,16 @@ export default function LobbyRoute() {
         setError(null)
         if (!lobbyCode) throw new Error('Missing lobby code')
 
-        await joinLobby(lobbyCode)
+        if (spectate) {
+          await joinLobbyAsSpectator(lobbyCode)
+        } else {
+          await joinLobby(lobbyCode)
+        }
 
-        // ✅ store for auto-rejoin
+        // store for auto-rejoin + role
         try {
           localStorage.setItem('oneclue_last_lobby_code', lobbyCode)
+          localStorage.setItem('oneclue_last_lobby_role', spectate ? 'spectator' : 'player')
         } catch {
           // ignore
         }
@@ -219,7 +245,7 @@ export default function LobbyRoute() {
     return () => {
       cancelled = true
     }
-  }, [lobbyCode])
+  }, [lobbyCode, spectate])
 
   // Realtime
   useEffect(() => {
@@ -233,13 +259,50 @@ export default function LobbyRoute() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lobbies', filter: `id=eq.${lobby.id}` }, async () => {
         const updated = await getLobbyByCode(lobbyCode)
         setLobby(updated)
+
+        if (autoNavRef.current) return
+
+        if (updated.status === 'closed') {
+          autoNavRef.current = true
+          navigate('/', { replace: true })
+          return
+        }
+
+        if (updated.status === 'in_game') {
+          try {
+            const gid = await loadLatestLobbyGameId(updated.id)
+            if (gid) {
+              autoNavRef.current = true
+              navigate(`/game/${gid}`, { replace: true })
+            }
+          } catch (err) {
+            console.error('[lobby] latest game lookup failed:', err)
+          }
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'games', filter: `lobby_id=eq.${lobby.id}` }, async () => {
+        if (autoNavRef.current) return
+        if (lobby.status !== 'in_game') return
+        try {
+          const gid = await loadLatestLobbyGameId(lobby.id)
+          if (gid) {
+            autoNavRef.current = true
+            navigate(`/game/${gid}`, { replace: true })
+          }
+        } catch (err) {
+          console.error('[lobby] games realtime lookup failed:', err)
+        }
       })
       .subscribe()
 
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [lobby?.id, lobbyCode])
+  }, [lobby?.id, lobby?.status, lobbyCode, navigate])
+
+  useEffect(() => {
+    autoNavRef.current = false
+  }, [lobbyCode])
 
   // Heartbeat
   useEffect(() => {
@@ -270,6 +333,23 @@ export default function LobbyRoute() {
     }
   }, [lobby?.id, myUserId])
 
+  useEffect(() => {
+    if (!lobby?.id) return
+    if (lobby.status !== 'in_game') return
+    if (autoNavRef.current) return
+
+    ;(async () => {
+      try {
+        const gid = await loadLatestLobbyGameId(lobby.id)
+        if (!gid) return
+        autoNavRef.current = true
+        navigate(`/game/${gid}`, { replace: true })
+      } catch (err) {
+        console.error('[lobby] initial in_game navigation failed:', err)
+      }
+    })()
+  }, [lobby?.id, lobby?.status, navigate])
+
   const playable = members.filter((m) => m.role === 'owner' || m.role === 'player')
   const redSpy = playable.filter((m) => m.team === 'red' && m.is_spymaster).length
   const blueSpy = playable.filter((m) => m.team === 'blue' && m.is_spymaster).length
@@ -286,7 +366,7 @@ export default function LobbyRoute() {
   async function handleSetTeam(targetUserId: string, team: 'red' | 'blue') {
     if (!lobby) return
     try {
-      setBusy(`Moving to ${team}…`)
+      setBusy(`Moving to ${team}â€¦`)
       const { error } = await supabase.rpc('set_member_team', {
         p_lobby_id: lobby.id,
         p_user_id: targetUserId,
@@ -305,7 +385,7 @@ export default function LobbyRoute() {
   async function handleToggleSpymaster(targetUserId: string, makeSpymaster: boolean) {
     if (!lobby) return
     try {
-      setBusy(makeSpymaster ? 'Making spymaster…' : 'Making operative…')
+      setBusy(makeSpymaster ? 'Making spymasterâ€¦' : 'Making operativeâ€¦')
 
       const { error } = await supabase.rpc('set_member_spymaster', {
         p_lobby_id: lobby.id,
@@ -326,7 +406,7 @@ export default function LobbyRoute() {
   async function handleStartGame() {
     if (!lobby) return
     try {
-      setBusy('Starting game…')
+      setBusy('Starting gameâ€¦')
       const gameId = await startGame(lobby.id)
       navigate(`/game/${gameId}`)
     } catch (err) {
@@ -342,10 +422,13 @@ export default function LobbyRoute() {
     if (!myUserId) return
 
     const mine = members.find((m) => m.user_id === myUserId)
-    const next = !(mine?.is_ready ?? false)
+    if (!mine) return
+    if (mine.role === 'spectator') return
+
+    const next = !(mine.is_ready ?? false)
 
     try {
-      setBusy(next ? 'Setting ready…' : 'Setting not ready…')
+      setBusy(next ? 'Setting readyâ€¦' : 'Setting not readyâ€¦')
       const { error } = await supabase
         .from('lobby_members')
         .update({ is_ready: next })
@@ -370,14 +453,13 @@ export default function LobbyRoute() {
     if (!ok) return
 
     try {
-      setBusy('Leaving…')
+      setBusy('Leavingâ€¦')
 
-      // remove membership
       const { error } = await supabase.from('lobby_members').delete().eq('lobby_id', lobby.id).eq('user_id', myUserId)
       if (error) throw error
 
-      // clear auto rejoin
       clearKey('oneclue_last_lobby_code')
+      clearKey('oneclue_last_lobby_role')
 
       navigate('/', { replace: true })
     } catch (err) {
@@ -389,195 +471,262 @@ export default function LobbyRoute() {
   }
 
   const myRow = myUserId ? members.find((m) => m.user_id === myUserId) : null
+  const amSpectator = myRow?.role === 'spectator'
+
+  const myGameRoleLabel = amSpectator ? 'spectator' : myRow?.is_spymaster ? 'spymaster' : 'operative'
+  const myTeamLabel = amSpectator ? '-' : myRow?.team ?? '-'
+  const redMembers = members.filter((m) => m.team === 'red' && (m.role === 'owner' || m.role === 'player'))
+  const blueMembers = members.filter((m) => m.team === 'blue' && (m.role === 'owner' || m.role === 'player'))
+  const spectators = members.filter((m) => m.role === 'spectator')
+
+  const btnBase = {
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.18)',
+    background: 'linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02)), rgba(0,0,0,0.30)',
+    color: 'rgba(245,248,255,0.96)',
+    fontWeight: 900,
+    cursor: 'pointer'
+  }
+
+  function roleBadge(member: MemberRow) {
+    if (member.role === 'owner') return 'owner'
+    if (member.is_spymaster) return 'spymaster'
+    return 'operative'
+  }
+
+  function shortUserId(id: string) {
+    if (!id) return '-'
+    return `${id.slice(0, 6)}...${id.slice(-4)}`
+  }
+
+  function renderMemberCard(member: MemberRow, index: number, tone: 'red' | 'blue' | 'neutral') {
+    const pill = statusPill(member.last_seen_at)
+    const toneBorder =
+      tone === 'red'
+        ? '1px solid rgba(255,95,95,0.34)'
+        : tone === 'blue'
+          ? '1px solid rgba(90,140,255,0.36)'
+          : '1px solid rgba(255,255,255,0.12)'
+    const toneBg =
+      tone === 'red'
+        ? 'linear-gradient(180deg, rgba(255,95,95,0.16), rgba(0,0,0,0.22))'
+        : tone === 'blue'
+          ? 'linear-gradient(180deg, rgba(90,140,255,0.18), rgba(0,0,0,0.24))'
+          : 'linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.24))'
+
+    return (
+      <div
+        key={member.user_id}
+        style={{
+          borderRadius: 14,
+          border: toneBorder,
+          background: toneBg,
+          boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.42), 0 8px 24px rgba(0,0,0,0.35)',
+          padding: 12,
+          display: 'grid',
+          gap: 10
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index)}</div>
+            <div style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.72 }}>{shortUserId(member.user_id)}</div>
+          </div>
+
+          <div
+            style={{
+              fontSize: 11,
+              padding: '4px 8px',
+              borderRadius: 999,
+              border: '1px solid rgba(255,255,255,0.16)',
+              background: pill.bg,
+              textTransform: 'uppercase',
+              fontWeight: 800
+            }}
+          >
+            {pill.text}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, opacity: 0.92 }}>
+          <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>{roleBadge(member)}</span>
+          <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>
+            ready: {member.is_ready ? 'yes' : 'no'}
+          </span>
+        </div>
+
+        {isOwner && lobby?.status === 'open' && member.role !== 'spectator' && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button onClick={() => handleSetTeam(member.user_id, 'red')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+              Red
+            </button>
+            <button onClick={() => handleSetTeam(member.user_id, 'blue')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+              Blue
+            </button>
+            {member.team ? (
+              member.is_spymaster ? (
+                <button onClick={() => handleToggleSpymaster(member.user_id, false)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+                  Operative
+                </button>
+              ) : (
+                <button onClick={() => handleToggleSpymaster(member.user_id, true)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+                  Spymaster
+                </button>
+              )
+            ) : null}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
-    <div style={{ minHeight: '100vh', padding: 16, background: '#0b0b0f', color: '#fff' }}>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        <button onClick={() => navigate('/')}>Back</button>
-        <button onClick={() => navigate(`/settings/${lobbyCode}`)}>Settings</button>
-        <button onClick={() => navigate('/profile')}>Profile</button>
-        <button onClick={handleLeaveLobby} disabled={!myRow || busy !== null} style={{ marginLeft: 'auto' }}>
-          Leave lobby
-        </button>
-      </div>
+    <div style={{ minHeight: '100vh', background: 'radial-gradient(900px 520px at 50% 10%, rgba(255,255,255,0.08), rgba(0,0,0,0) 60%), #000', color: '#fff', padding: 16 }}>
+      <style>{`
+        .lobby-grid-main{
+          display:grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+        .lobby-teams{
+          display:grid;
+          grid-template-columns: 1fr 1fr 0.9fr;
+          gap: 12px;
+          margin-top: 12px;
+        }
+        @media (max-width: 980px){
+          .lobby-grid-main{ grid-template-columns: 1fr; }
+          .lobby-teams{ grid-template-columns: 1fr; }
+        }
+      `}</style>
 
-      <h2 style={{ marginBottom: 8 }}>Lobby</h2>
-
-      {state === 'loading' && <p>Joining and loading…</p>}
-
-      {state === 'error' && (
-        <div style={{ padding: 12, border: '1px solid #ff4d4f', borderRadius: 8 }}>
-          <p style={{ margin: 0 }}>Error: {error}</p>
+      <div
+        style={{
+          width: 'min(1180px, 100%)',
+          margin: '0 auto',
+          borderRadius: 24,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.72)',
+          padding: 14
+        }}
+      >
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button onClick={() => navigate('/')} style={btnBase}>Home</button>
+          <button onClick={() => navigate(`/settings/${lobbyCode}`)} style={btnBase}>Settings</button>
+          <button onClick={() => navigate('/profile')} style={btnBase}>Profile</button>
+          <button onClick={handleLeaveLobby} disabled={!myRow || busy !== null} style={{ ...btnBase, marginLeft: 'auto', borderColor: 'rgba(255,120,120,0.35)' }}>
+            Leave Lobby
+          </button>
         </div>
-      )}
 
-      {state === 'ready' && lobby && (
-        <>
-          <div style={{ marginTop: 12, padding: 12, border: '1px solid #2a2a35', borderRadius: 8 }}>
-            <p style={{ margin: 0, opacity: 0.9 }}>
-              Code: <b>{lobby.code}</b>
-            </p>
+        {state === 'loading' && <div style={{ padding: 12, opacity: 0.9 }}>Joining and loading...</div>}
 
-            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button onClick={() => copyText('code', lobby.code)} disabled={!lobby.code}>
-                Copy code
-              </button>
-              <button onClick={() => copyText('invite link', lobbyLink)} disabled={!lobbyLink}>
-                Copy invite link
-              </button>
-              {notice && (
-                <span
-                  style={{
-                    opacity: 0.85,
-                    padding: '4px 10px',
-                    borderRadius: 999,
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    background: '#111118'
-                  }}
-                >
-                  {notice}
-                </span>
-              )}
-            </div>
+        {state === 'error' && (
+          <div style={{ padding: 12, borderRadius: 12, border: '1px solid rgba(255,90,90,0.50)', background: 'rgba(255,60,60,0.08)' }}>
+            Error: {error}
+          </div>
+        )}
 
-            <p style={{ margin: '10px 0 0 0', opacity: 0.8 }}>
-              Status: <b>{lobby.status}</b> • Owner: <b>{isOwner ? 'you' : 'no'}</b>
-            </p>
+        {state === 'ready' && lobby && (
+          <>
+            <div className="lobby-grid-main">
+              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.28)', padding: 14 }}>
+                <div style={{ fontSize: 12, letterSpacing: '.14em', textTransform: 'uppercase', opacity: 0.72, fontWeight: 900 }}>Lobby</div>
+                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 30, fontWeight: 1000, letterSpacing: '.08em' }}>{lobby.code}</div>
+                  <span style={{ padding: '5px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.16)', background: lobby.status === 'open' ? 'rgba(90,180,120,0.16)' : lobby.status === 'in_game' ? 'rgba(90,140,255,0.18)' : 'rgba(255,120,120,0.16)', fontSize: 12, fontWeight: 900, textTransform: 'uppercase' }}>
+                    {lobby.status}
+                  </span>
+                </div>
 
-            {myRow && (
-              <p style={{ margin: '10px 0 0 0', opacity: 0.9 }}>
-                You: <b>{displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id))}</b> • team{' '}
-                <b>{myRow.team ?? '—'}</b> • role <b>{myRow.is_spymaster ? 'spymaster' : 'operative'}</b> • ready{' '}
-                <b>{myRow.is_ready ? 'yes' : 'no'}</b>
-              </p>
-            )}
+                <div style={{ marginTop: 8, opacity: 0.92 }}>
+                  You: <b>{myRow ? displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id)) : '-'}</b> . team <b>{myTeamLabel}</b> . role <b>{myGameRoleLabel}</b>
+                </div>
+                <div style={{ marginTop: 4, opacity: 0.84 }}>
+                  Owner: <b>{isOwner ? 'you' : 'other player'}</b> . Ready: <b>{readyCount}</b>/<b>{playableCount}</b>
+                </div>
+                {amSpectator && <div style={{ marginTop: 8, opacity: 0.84 }}>You are spectating. Team actions are disabled.</div>}
 
-            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button onClick={handleToggleReady} disabled={!myRow || busy !== null || lobby.status !== 'open'}>
-                {myRow?.is_ready ? 'Set not ready' : 'Set ready'}
-              </button>
-
-              {isOwner && (
-                <label style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.95 }}>
-                  <input
-                    type="checkbox"
-                    checked={requireReady}
-                    onChange={(e) => setRequireReady(e.target.checked)}
-                    disabled={lobby.status !== 'open'}
-                  />
-                  <span>Require ready to start</span>
-                </label>
-              )}
-
-              <span style={{ opacity: 0.85 }}>
-                Ready: <b>{readyCount}</b>/<b>{playableCount}</b>
-              </span>
-            </div>
-
-            <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: '1px solid #1f1f29', background: '#111118' }}>
-              <div style={{ opacity: 0.9, marginBottom: 6 }}>Setup needed to start:</div>
-              <div style={{ opacity: 0.85 }}>
-                Red: spymaster <b>{redSpy}</b>, operatives <b>{redOps}</b> • Blue: spymaster <b>{blueSpy}</b>, operatives <b>{blueOps}</b>
+                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button onClick={() => copyText('code', lobby.code)} disabled={!lobby.code} style={btnBase}>Copy Code</button>
+                  <button onClick={() => copyText('invite link', lobbyLink)} disabled={!lobbyLink} style={btnBase}>Copy Invite Link</button>
+                  {notice && <span style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.08)', fontSize: 12 }}>{notice}</span>}
+                </div>
               </div>
 
-              {requireReady && (
-                <div style={{ marginTop: 6, opacity: 0.85 }}>
-                  Ready required: <b>{readyOk ? 'ok' : 'not yet'}</b>
+              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.28)', padding: 14 }}>
+                <div style={{ fontSize: 12, letterSpacing: '.14em', textTransform: 'uppercase', opacity: 0.72, fontWeight: 900 }}>Game Setup</div>
+                <div style={{ marginTop: 8, display: 'grid', gap: 6, opacity: 0.92 }}>
+                  <div>Red Team: spymaster <b>{redSpy}</b>, operatives <b>{redOps}</b></div>
+                  <div>Blue Team: spymaster <b>{blueSpy}</b>, operatives <b>{blueOps}</b></div>
+                  {requireReady && <div>Ready required: <b>{readyOk ? 'ok' : 'not yet'}</b></div>}
                 </div>
-              )}
 
-              <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <button onClick={handleStartGame} disabled={!canStart}>
-                  Start Game
-                </button>
+                <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={handleToggleReady}
+                    disabled={!myRow || busy !== null || lobby.status !== 'open' || amSpectator}
+                    style={{ ...btnBase, borderColor: 'rgba(150,240,190,0.35)' }}
+                  >
+                    {myRow?.is_ready ? 'Set Not Ready' : 'Set Ready'}
+                  </button>
+                  <button
+                    onClick={handleStartGame}
+                    disabled={!canStart}
+                    style={{ ...btnBase, borderColor: canStart ? 'rgba(255,220,120,0.55)' : 'rgba(255,255,255,0.16)', opacity: canStart ? 1 : 0.6 }}
+                  >
+                    Start Game
+                  </button>
+                </div>
+
+                {isOwner && (
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, opacity: 0.95 }}>
+                    <input type="checkbox" checked={requireReady} onChange={(e) => setRequireReady(e.target.checked)} disabled={lobby.status !== 'open'} />
+                    <span>Require everyone ready before start</span>
+                  </label>
+                )}
+
                 {!canStart && (
-                  <span style={{ opacity: 0.8 }}>
+                  <div style={{ marginTop: 10, opacity: 0.78, fontSize: 13 }}>
                     Need 1 spymaster + 1 operative per team{requireReady ? ' + everyone ready' : ''}.
-                  </span>
+                  </div>
                 )}
               </div>
             </div>
-          </div>
 
-          <div style={{ marginTop: 12, padding: 12, border: '1px solid #2a2a35', borderRadius: 8 }}>
-            <h3 style={{ marginTop: 0 }}>Members</h3>
+            <div className="lobby-teams">
+              <div style={{ borderRadius: 16, border: '1px solid rgba(255,95,95,0.35)', background: 'rgba(80,20,20,0.28)', padding: 12 }}>
+                <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(255,210,210,0.98)' }}>Red Team ({redMembers.length})</div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {redMembers.length === 0 ? <div style={{ opacity: 0.7 }}>No players assigned.</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
+                </div>
+              </div>
 
-            <div style={{ display: 'grid', gap: 8 }}>
-              {members.map((m, idx) => {
-                const pill = statusPill(m.last_seen_at)
-                return (
-                  <div
-                    key={m.user_id}
-                    style={{
-                      padding: 10,
-                      borderRadius: 10,
-                      border: '1px solid #1f1f29',
-                      background: '#111118',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      alignItems: 'center'
-                    }}
-                  >
-                    <div style={{ overflow: 'hidden' }}>
-                      <div style={{ fontWeight: 800 }}>{displayNameFor(m, idx)}</div>
-                      <div style={{ fontFamily: 'monospace', fontSize: 12, opacity: 0.75 }}>{m.user_id}</div>
-                      <div style={{ marginTop: 4, opacity: 0.9 }}>
-                        team: <b>{m.team ?? '—'}</b> • role: <b>{m.is_spymaster ? 'spymaster' : 'operative'}</b> • lobby role:{' '}
-                        <b>{m.role}</b>
-                      </div>
-                    </div>
+              <div style={{ borderRadius: 16, border: '1px solid rgba(90,140,255,0.38)', background: 'rgba(18,32,80,0.30)', padding: 12 }}>
+                <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(214,228,255,0.98)' }}>Blue Team ({blueMembers.length})</div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {blueMembers.length === 0 ? <div style={{ opacity: 0.7 }}>No players assigned.</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
+                </div>
+              </div>
 
-                    <div style={{ display: 'grid', gap: 6, textAlign: 'right' }}>
-                      <div
-                        style={{
-                          justifySelf: 'end',
-                          fontSize: 12,
-                          opacity: 0.9,
-                          padding: '4px 8px',
-                          borderRadius: 999,
-                          border: '1px solid rgba(255,255,255,0.12)',
-                          background: pill.bg
-                        }}
-                      >
-                        {pill.text}
-                      </div>
-
-                      <div style={{ opacity: 0.85 }}>
-                        ready: <b>{m.is_ready ? 'yes' : 'no'}</b>
-                      </div>
-
-                      {isOwner && lobby.status === 'open' && m.role !== 'spectator' && (
-                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                          <button onClick={() => handleSetTeam(m.user_id, 'red')} disabled={busy !== null}>
-                            To red
-                          </button>
-                          <button onClick={() => handleSetTeam(m.user_id, 'blue')} disabled={busy !== null}>
-                            To blue
-                          </button>
-                          {m.team ? (
-                            m.is_spymaster ? (
-                              <button onClick={() => handleToggleSpymaster(m.user_id, false)} disabled={busy !== null}>
-                                Make operative
-                              </button>
-                            ) : (
-                              <button onClick={() => handleToggleSpymaster(m.user_id, true)} disabled={busy !== null}>
-                                Make spymaster
-                              </button>
-                            )
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
+              <div style={{ borderRadius: 16, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(0,0,0,0.26)', padding: 12 }}>
+                <div style={{ fontWeight: 1000, marginBottom: 10 }}>Spectators ({spectators.length})</div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {spectators.length === 0 ? <div style={{ opacity: 0.7 }}>No spectators.</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
+                </div>
+              </div>
             </div>
 
-            {lobby.status !== 'open' && <p style={{ marginTop: 10, opacity: 0.8 }}>Roles/teams are locked after start.</p>}
-          </div>
-        </>
-      )}
+            {lobby.status !== 'open' && (
+              <div style={{ marginTop: 12, padding: 10, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.05)', opacity: 0.9 }}>
+                Teams and roles are locked while lobby is not open.
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {busy && (
         <div
