@@ -310,7 +310,9 @@
       "redTeamTurn": "Red Team Turn",
       "blueTeamTurn": "Blue Team Turn",
       "waiting": "Waiting For Turn",
-      "yourTurn": "Your turn"
+      "yourTurn": "Your turn",
+      "actorWritingClue": "{{name}} is writing a clue",
+      "actorSolvingClue": "{{name}} is solving the clue"
     },
     "counters": {
       "blueRemaining": "Blue remaining",
@@ -386,10 +388,15 @@
       "title": "Dice",
       "usedTurn": "Used turn",
       "ready": "Ready",
-      "streakProgress": "Streak {{streak}}/3",
+      "streakProgress": "Streak {{streak}}/{{target}}",
       "roll": "Roll Dice",
+      "apply": "Apply",
       "lastRoll": "Last roll: {{option}}",
       "rollHint": "Roll to get a random dice power.",
+      "singleTargetHelp": "Select 1 unrevealed card as the target.",
+      "swapStep1": "Step 1: Select your first unrevealed card (A).",
+      "swapStep2": "Step 2: Select a different unrevealed card (B). Current A: {{pos}}.",
+      "swapSelected": "Selected A: {{posA}}, B: {{posB}}. Press Apply.",
       "doubleHint": "Double Hint",
       "sabotageReassign": "Sabotage Reassign",
       "stealReassign": "Steal Reassign",

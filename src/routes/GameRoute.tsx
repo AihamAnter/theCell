@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { supabase } from '../lib/supabaseClient'
@@ -19,6 +19,8 @@ import { useDiceOption, useHelperAction, type DiceOption, type HelperAction } fr
 import { getLobbyById, joinLobby, joinLobbyAsSpectator } from '../lib/lobbies'
 import { getLobbyProfiles } from '../lib/publicProfiles'
 import { recordFinishedGameStats } from '../lib/playerStats'
+import { settingsFromLobby } from '../lib/gameSettings'
+import { playManagedSfx, playSfx, stopSfx } from '../lib/sfx'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -36,6 +38,12 @@ type HintGuess = { word: string; correct: boolean }
 type HintTrack = { id: string; clue: string; number: number; words: HintGuess[] }
 type ProfileView = { displayName: string; avatarUrl: string }
 type RevealMark = { pos: number; byUserId: string | null; at: number }
+type DicePickerState = {
+  option: 'sabotage_reassign' | 'steal_reassign' | 'swap'
+  posA: number | null
+  posB: number | null
+}
+const HEARTBEAT_MS = 30_000
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -140,6 +148,17 @@ function timeCutHalfAppliesNow(state: any, currentTurnTeam: 'red' | 'blue' | nul
   return mode === 'half'
 }
 
+function buildTurnSig(g: Game | null): string {
+  if (!g) return 'x'
+  const st = (g.state as any) ?? {}
+  const started = String((g as any).turn_started_at ?? st.turn_started_at ?? '')
+  const team = String(g.current_turn_team ?? 'x')
+  const tn = String(st.turn_no ?? '')
+  const clue = String(g.clue_word ?? '')
+  const num = String(g.clue_number ?? '')
+  return `${team}|${tn}|${started}|${clue}|${num}`
+}
+
 export default function GameRoute() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -242,6 +261,7 @@ useEffect(() => {
   const [showWinTrail, setShowWinTrail] = useState(false)
   const [lobbyCode, setLobbyCode] = useState<string>('')
   const [showRules, setShowRules] = useState(false)
+  const [dicePicker, setDicePicker] = useState<DicePickerState | null>(null)
   const [revealMarks, setRevealMarks] = useState<Record<number, RevealMark>>({})
   const channelRef = useRef<any>(null)
   const prevRevealedRef = useRef<Map<number, boolean>>(new Map())
@@ -252,18 +272,40 @@ useEffect(() => {
   const prevGameRef = useRef<Game | null>(null)
   const statsRecordedGameIdsRef = useRef<Set<string>>(new Set())
   const prevForcedWinnerRef = useRef<'red' | 'blue' | null>(null)
+  const lastOutcomeSfxRef = useRef<string>('')
+  const countdownSfxTurnSigRef = useRef<string>('')
   const autoEndTurnRef = useRef<{ sig: string; inFlight: boolean }>({ sig: '', inFlight: false })
   const guessesTransitionRef = useRef<{ turnSig: string; prev: number | null }>({ turnSig: '', prev: null })
 
   // timer (persisted if `games.turn_started_at` exists)
-const TURN_SECONDS = 180
+const DEFAULT_TURN_SECONDS = 60
+const [timerSettings, setTimerSettings] = useState<{ useTurnTimer: boolean; turnSeconds: number; streakToUnlockDice: number }>({
+  useTurnTimer: true,
+  turnSeconds: DEFAULT_TURN_SECONDS,
+  streakToUnlockDice: 4
+})
+
+async function refreshTimerSettings(lobbyId: string): Promise<void> {
+  try {
+    const lobby = await getLobbyById(lobbyId)
+    const gs = settingsFromLobby(lobby)
+    setTimerSettings({
+      useTurnTimer: gs.useTurnTimer,
+      turnSeconds: Math.max(15, Math.min(300, Math.floor(gs.turnSeconds))),
+      streakToUnlockDice: Math.max(2, Math.min(8, Math.floor(gs.streakToUnlockDice)))
+    })
+  } catch (err) {
+    console.warn('[game] refresh timer settings failed:', err)
+  }
+}
 
 function getTurnTotalSeconds(g: Game | null): number {
-  if (!g) return TURN_SECONDS
+  if (!g) return timerSettings.turnSeconds
   const st: any = g.state
+  const base = timerSettings.turnSeconds
   // If time_cut_mode is "half" for the current team, make the whole turn half duration (refresh-safe).
-  if (timeCutHalfAppliesNow(st, g.current_turn_team)) return Math.max(10, Math.floor(TURN_SECONDS / 2))
-  return TURN_SECONDS
+  if (timeCutHalfAppliesNow(st, g.current_turn_team)) return Math.max(10, Math.floor(base / 2))
+  return base
 }
 
 function getTurnStartedAt(g: Game | null): string | null {
@@ -276,16 +318,33 @@ function getTurnStartedAt(g: Game | null): string | null {
 
 function computeTurnLeftFromGame(g: Game | null): number {
   const total = getTurnTotalSeconds(g)
+  if (!g) return total
+
+  const sig = buildTurnSig(g)
   const started = getTurnStartedAt(g)
-  if (!started) return total
-  const ms = Date.parse(started)
-  if (!Number.isFinite(ms)) return total
-  const elapsed = Math.floor((Date.now() - ms) / 1000)
+  const parsedMs = started ? Date.parse(started) : NaN
+
+  let startMs: number | null = Number.isFinite(parsedMs) ? parsedMs : null
+  if (startMs === null) {
+    const cached = localTurnStartMsBySigRef.current[sig]
+    if (Number.isFinite(cached)) {
+      startMs = cached
+    } else {
+      startMs = Date.now()
+      localTurnStartMsBySigRef.current[sig] = startMs
+    }
+  } else {
+    // Prefer backend timestamp when available, but cache it for stable ticking.
+    localTurnStartMsBySigRef.current[sig] = startMs
+  }
+
+  const elapsed = Math.floor((Date.now() - startMs) / 1000)
   return clampInt(total - elapsed, 0, total)
 }
 
-const [turnLeft, setTurnLeft] = useState<number>(TURN_SECONDS)
+const [turnLeft, setTurnLeft] = useState<number>(DEFAULT_TURN_SECONDS)
 const lastTurnSigRef = useRef<string>('')
+const localTurnStartMsBySigRef = useRef<Record<string, number>>({})
 
 useEffect(() => {
   isEditingClueRef.current = isEditingClue
@@ -345,13 +404,26 @@ function handleClueInputBlur() {
   }
 }
 
-const amOwner = useMemo(() => {
+  const amOwner = useMemo(() => {
     if (!myUserId) return false
     return members.some((m) => m.user_id === myUserId && m.role === 'owner')
   }, [members, myUserId])
+  const amPlayableMember = useMemo(() => {
+    if (!myUserId) return false
+    return members.some((m) => m.user_id === myUserId && (m.role === 'owner' || m.role === 'player'))
+  }, [members, myUserId])
+  const canAutoAdvanceTurn = amPlayableMember
 
   const myPeeks = useMemo(() => getPeeks(game?.state as any, myTeam), [game?.state, myTeam])
   const myStreak = useMemo(() => getStreak(game?.state as any, myTeam), [game?.state, myTeam])
+  const diceFillPercent = useMemo(() => {
+    const s = Math.max(0, Math.floor(myStreak))
+    if (s <= 0) return 0
+    if (s === 1) return 20
+    if (s === 2) return 50
+    if (s === 3) return 80
+    return 100
+  }, [myStreak])
   const memberTeamById = useMemo(() => {
     const out = new Map<string, 'red' | 'blue' | null>()
     for (const m of members) out.set(m.user_id, m.team)
@@ -368,8 +440,8 @@ const amOwner = useMemo(() => {
     return { red, blue }
   }, [cards])
 
-  // dice unlock rule: 3 correct reveals in the current round
-  const diceUnlocked = roundCorrectStreak >= 3 || myStreak >= 3
+  const diceUnlockStreak = 4
+  const diceUnlocked = myStreak >= diceUnlockStreak
   const diceUsed = useMemo(() => diceUsedThisTurn(game?.state as any), [game?.state])
 
   useEffect(() => {
@@ -402,6 +474,7 @@ const amOwner = useMemo(() => {
         if (lmErr) throw lmErr
 
         await refreshMembers(g.lobby_id, true)
+        await refreshTimerSettings(g.lobby_id)
 
 
         if (cancelled) return
@@ -442,6 +515,38 @@ const amOwner = useMemo(() => {
       }
     }
   }, [])
+
+  // Keep lobby member presence fresh during game so auto-turn driver election does not pick offline members.
+  useEffect(() => {
+    if (!game?.lobby_id) return
+    if (!myUserId) return
+
+    let cancelled = false
+    const lobbyId = game.lobby_id
+
+    const ping = async () => {
+      try {
+        await supabase
+          .from('lobby_members')
+          .update({ last_seen_at: new Date().toISOString() })
+          .eq('lobby_id', lobbyId)
+          .eq('user_id', myUserId)
+      } catch {
+        // ignore heartbeat failures
+      }
+    }
+
+    void ping()
+    const id = window.setInterval(() => {
+      if (cancelled) return
+      void ping()
+    }, HEARTBEAT_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [game?.lobby_id, myUserId])
     useEffect(() => {
     if (!gameId) return
     if (!game?.lobby_id) return
@@ -689,6 +794,15 @@ const amOwner = useMemo(() => {
     }, ms)
   }
 
+  function playOutcomeSfx(winner: 'red' | 'blue' | null | undefined) {
+    if (!winner) return
+    const outcome = myTeam ? (winner === myTeam ? 'win' : 'lose') : 'win'
+    const sig = `${gameId}|${winner}|${outcome}`
+    if (lastOutcomeSfxRef.current === sig) return
+    lastOutcomeSfxRef.current = sig
+    playSfx(outcome, 0.92)
+  }
+
   useEffect(() => {
     if (!game) return
     const prev = prevGameRef.current
@@ -697,6 +811,7 @@ const amOwner = useMemo(() => {
 
     if (prev.current_turn_team !== game.current_turn_team && game.current_turn_team) {
       showCenterNotice(t('game.notice.teamTurn', { team: teamLabelText(game.current_turn_team) }), 'turn', 1700)
+      playSfx('turn', 0.7)
     }
 
     const prevClue = (prev.clue_word ?? '').trim()
@@ -713,12 +828,14 @@ const amOwner = useMemo(() => {
         return { ...logs, [team]: arr.slice(-6) }
       })
       showCenterNotice(t('game.notice.clueSet', { clue: nextClue, number: String(game.clue_number ?? t('game.symbol.none')) }), 'info', 2200)
+      playSfx('clue', 0.8)
     }
 
     if (prev.status !== game.status) {
       if (game.status === 'finished') {
         if (game.winning_team) {
           showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(game.winning_team) }), 'win', 2600)
+          playOutcomeSfx(game.winning_team)
         } else {
           showCenterNotice(t('game.notice.gameFinished'), 'win', 2200)
         }
@@ -729,8 +846,9 @@ const amOwner = useMemo(() => {
 
     if (prev.winning_team !== game.winning_team && game.winning_team) {
       showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(game.winning_team) }), 'win', 2600)
+      playOutcomeSfx(game.winning_team)
     }
-  }, [game])
+  }, [game, gameId, myTeam, t])
 
   useEffect(() => {
     const g = game
@@ -795,7 +913,8 @@ const amOwner = useMemo(() => {
     if (prevForcedWinnerRef.current === winner) return
     prevForcedWinnerRef.current = winner
     showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(winner) }), 'win', 2600)
-  }, [game])
+    playOutcomeSfx(winner)
+  }, [game, gameId, myTeam, t])
 
   useEffect(() => {
     let cancelled = false
@@ -819,7 +938,7 @@ const amOwner = useMemo(() => {
   // reset timer on new turn signature
   useEffect(() => {
     if (!game) return
-    const sig = `${game.current_turn_team ?? 'x'}|${game.clue_word ?? ''}|${game.clue_number ?? ''}|${(game.state as any)?.turn_no ?? ''}`
+    const sig = buildTurnSig(game)
     if (sig !== lastTurnSigRef.current) {
       lastTurnSigRef.current = sig
       setTurnLeft(computeTurnLeftFromGame(game))
@@ -839,15 +958,53 @@ useEffect(() => {
   const localStatus = game.status === 'active' && winner ? 'finished' : game.status
   if (localStatus !== 'active') return
 
+  if (!timerSettings.useTurnTimer) {
+    setTurnLeft(getTurnTotalSeconds(game))
+    return
+  }
+
   // snap immediately, then tick
   setTurnLeft(computeTurnLeftFromGame(game))
   const id = window.setInterval(() => setTurnLeft(computeTurnLeftFromGame(game)), 1000)
   return () => window.clearInterval(id)
-}, [state, game])
+}, [state, game, timerSettings.useTurnTimer, timerSettings.turnSeconds])
+
+  // Play "time running" once when the timer enters the last 10 seconds of a turn.
+  useEffect(() => {
+    if (!game) {
+      stopSfx('time_running')
+      return
+    }
+    if (!timerSettings.useTurnTimer) {
+      stopSfx('time_running')
+      return
+    }
+
+    const blueNow = clampInt(game.blue_remaining ?? 0, 0, 99)
+    const redNow = clampInt(game.red_remaining ?? 0, 0, 99)
+    const winner: 'red' | 'blue' | null = game.winning_team ?? (blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null)
+    const localStatus = game.status === 'active' && winner ? 'finished' : game.status
+    if (localStatus !== 'active') {
+      stopSfx('time_running')
+      return
+    }
+
+    if (turnLeft > 0 && turnLeft <= 10) {
+      const sig = buildTurnSig(game)
+      if (countdownSfxTurnSigRef.current !== sig) {
+        countdownSfxTurnSigRef.current = sig
+        playManagedSfx('time_running', 0.9)
+      }
+      return
+    }
+    stopSfx('time_running')
+  }, [game, turnLeft, timerSettings.useTurnTimer])
 
 // auto-change turn when timer reaches 0
   useEffect(() => {
     if (!gameId || !game) return
+    if (!timerSettings.useTurnTimer) return
+    if (!canAutoAdvanceTurn) return
     if (turnLeft > 0) return
     if (game.status !== 'active') return
     const blueNow = clampInt(game.blue_remaining ?? 0, 0, 99)
@@ -855,7 +1012,7 @@ useEffect(() => {
     const winner: 'red' | 'blue' | null = game.winning_team ?? (blueNow === 0 ? 'blue' : redNow === 0 ? 'red' : null)
     if (winner) return
 
-    const turnSig = `${game.current_turn_team ?? 'x'}|${(game.state as any)?.turn_no ?? ''}`
+    const turnSig = buildTurnSig(game)
     if (autoEndTurnRef.current.sig === turnSig) return
     if (autoEndTurnRef.current.inFlight) return
 
@@ -864,22 +1021,36 @@ useEffect(() => {
 
     ;(async () => {
       try {
+        const fresh = await loadGame(gameId)
+        if (fresh.status !== 'active') return
+        if (buildTurnSig(fresh) !== turnSig) return
         await endTurn(gameId)
+        const after = await loadGame(gameId)
+        if (buildTurnSig(after) === turnSig && after.status === 'active' && !after.winning_team) {
+          // end_turn returned but turn did not advance; allow immediate retry.
+          if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
+        }
+        // Pull fresh game state so turn/team/timer updates immediately without relying on realtime timing.
+        setGame(after)
+        syncClueInputsFromGame(after)
       } catch (err) {
+        // Allow retry for the same turn if this attempt fails.
+        if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
         console.warn('[game] timer auto end_turn skipped:', err)
       } finally {
         autoEndTurnRef.current.inFlight = false
       }
     })()
-  }, [gameId, game, turnLeft])
+  }, [gameId, game, turnLeft, canAutoAdvanceTurn, timerSettings.useTurnTimer])
 
   // auto-change turn when guesses are exhausted
   useEffect(() => {
     if (!gameId || !game) return
+    if (!canAutoAdvanceTurn) return
     if (game.status !== 'active') return
     const gr = Number(game.guesses_remaining ?? -1)
 
-    const turnSig = `${game.current_turn_team ?? 'x'}|${(game.state as any)?.turn_no ?? ''}`
+    const turnSig = buildTurnSig(game)
     if (guessesTransitionRef.current.turnSig !== turnSig) {
       guessesTransitionRef.current = { turnSig, prev: Number.isFinite(gr) ? gr : null }
       return
@@ -899,20 +1070,31 @@ useEffect(() => {
 
     ;(async () => {
       try {
+        const fresh = await loadGame(gameId)
+        if (fresh.status !== 'active') return
+        if (buildTurnSig(fresh) !== turnSig) return
+        const freshGuesses = Number(fresh.guesses_remaining ?? -1)
+        if (!Number.isFinite(freshGuesses) || freshGuesses > 0) return
         await endTurn(gameId)
+        const after = await loadGame(gameId)
+        if (buildTurnSig(after) === turnSig && after.status === 'active' && !after.winning_team) {
+          // end_turn returned but turn did not advance; allow immediate retry.
+          if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
+        }
 
         // pull fresh game state so UI flips immediately even if realtime misses it
-        const g2 = await loadGame(gameId)
-        setGame(g2)
-        syncClueInputsFromGame(g2)
+        setGame(after)
+        syncClueInputsFromGame(after)
       } catch (err) {
+        // Allow retry for the same turn if this attempt fails.
+        if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
         console.warn('[game] guesses auto end_turn failed:', err)
         showCenterNotice(supaErr(err), 'info', 2600)
       } finally {
         autoEndTurnRef.current.inFlight = false
       }
     })()
-  }, [gameId, game])
+  }, [gameId, game, canAutoAdvanceTurn])
 
 
 
@@ -944,6 +1126,13 @@ async function handleReveal(pos: number) {
       })
 
       const res = await revealCard(gameId, pos)
+      if (res.revealed_color === 'assassin') {
+        playSfx('reveal_assassin', 0.95)
+      } else if (game?.current_turn_team && res.revealed_color === game.current_turn_team) {
+        playSfx('reveal_correct', 0.85)
+      } else {
+        playSfx('reveal_incorrect', 0.85)
+      }
       const nextGuesses =
         res.guesses_remaining === null || res.guesses_remaining === undefined
           ? null
@@ -965,14 +1154,23 @@ async function handleReveal(pos: number) {
       const gr = typeof nextGuesses === 'number' && Number.isFinite(nextGuesses)
         ? nextGuesses
         : Number(g1.guesses_remaining ?? -1)
-      if (wasMyTurn && g1.status === 'active' && !g1.winning_team && Number.isFinite(gr) && gr === 0) {
-        const turnSig = `${g1.current_turn_team ?? 'x'}|${(g1.state as any)?.turn_no ?? ''}`
+      const beforeTurnSig = buildTurnSig(game)
+      const afterTurnSig = buildTurnSig(g1)
+      if (wasMyTurn && canAutoAdvanceTurn && beforeTurnSig === afterTurnSig && g1.status === 'active' && !g1.winning_team && Number.isFinite(gr) && gr === 0) {
+        const turnSig = buildTurnSig(g1)
         if (!autoEndTurnRef.current.inFlight && autoEndTurnRef.current.sig !== turnSig) {
           autoEndTurnRef.current.inFlight = true
           autoEndTurnRef.current.sig = turnSig
           try {
             await endTurn(gameId)
+            const after = await loadGame(gameId)
+            if (buildTurnSig(after) === turnSig && after.status === 'active' && !after.winning_team) {
+              // end_turn returned but turn did not advance; allow immediate retry.
+              if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
+            }
           } catch (err) {
+            // Allow retry for the same turn if this attempt fails.
+            if (autoEndTurnRef.current.sig === turnSig) autoEndTurnRef.current.sig = ''
             console.warn('[game] reveal -> auto end_turn failed:', err)
             showCenterNotice(supaErr(err), 'info', 2600)
           } finally {
@@ -1149,37 +1347,46 @@ useEffect(() => {
   async function runDice(option: DiceOption) {
     if (!gameId) return
     if (!isGameActive) return
+    if (dicePicker) return
+    if (option === 'sabotage_reassign' || option === 'steal_reassign' || option === 'swap') {
+      setDicePicker({ option, posA: null, posB: null })
+      return
+    }
     try {
       setBusy(t('game.busy.usingDice'))
-
-      // options needing positions
-      if (option === 'sabotage_reassign' || option === 'steal_reassign') {
-        const posStr = window.prompt(t('game.prompt.targetPos'))
-        if (posStr === null) return
-        const pos = Number(posStr)
-        if (!Number.isFinite(pos)) return showCenterNotice(t('game.notice.invalidPosition'), 'info', 2000)
-        const res = await useDiceOption(gameId, option, { pos })
-        console.log('[dice result]', res)
-        showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
-        return
-      }
-      if (option === 'swap') {
-        const aStr = window.prompt(t('game.prompt.swapPosA'))
-        if (aStr === null) return
-        const bStr = window.prompt(t('game.prompt.swapPosB'))
-        if (bStr === null) return
-        const pos_a = Number(aStr)
-        const pos_b = Number(bStr)
-        if (!Number.isFinite(pos_a) || !Number.isFinite(pos_b)) return showCenterNotice(t('game.notice.invalidPositions'), 'info', 2000)
-        const res = await useDiceOption(gameId, option, { pos_a, pos_b })
-        console.log('[dice result]', res)
-        showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
-        return
-      }
       // simple options
       const res = await useDiceOption(gameId, option, {})
       console.log('[dice result]', res)
       showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
+    } catch (err) {
+      console.error('[dice] failed:', err)
+      showCenterNotice(supaErr(err), 'info', 2600)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function submitDicePicker() {
+    if (!gameId || !dicePicker) return
+    const { option, posA, posB } = dicePicker
+    if ((option === 'sabotage_reassign' || option === 'steal_reassign') && !Number.isFinite(Number(posA))) {
+      showCenterNotice(t('game.notice.invalidPosition'), 'info', 2000)
+      return
+    }
+    if (option === 'swap' && (!Number.isFinite(Number(posA)) || !Number.isFinite(Number(posB)) || posA === posB)) {
+      showCenterNotice(t('game.notice.invalidPositions'), 'info', 2000)
+      return
+    }
+    try {
+      setBusy(t('game.busy.usingDice'))
+      const params =
+        option === 'swap'
+          ? { pos_a: Number(posA), pos_b: Number(posB) }
+          : { pos: Number(posA) }
+      const res = await useDiceOption(gameId, option, params)
+      console.log('[dice result]', res)
+      showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
+      setDicePicker(null)
     } catch (err) {
       console.error('[dice] failed:', err)
       showCenterNotice(supaErr(err), 'info', 2600)
@@ -1197,7 +1404,7 @@ useEffect(() => {
   }
 
   async function handleRollDice() {
-    if (!isGameActive || !diceUnlocked || diceUsed || busy !== null) return
+    if (!isGameActive || !diceUnlocked || diceUsed || busy !== null || dicePicker !== null) return
     const options: DiceOption[] = ['double_hint', 'sabotage_reassign', 'steal_reassign', 'shield', 'cancel', 'swap']
     const option = options[Math.floor(Math.random() * options.length)]
     setRolledDiceOption(option)
@@ -1259,6 +1466,23 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
       : currentTurnTeam === 'blue'
         ? t('game.turn.blueTeamTurn')
         : t('game.turn.waiting')
+  const turnClueWord = String(game?.clue_word ?? '').trim()
+  const turnClueClass = !isGameActive ? 'done' : currentTurnTeam === 'red' ? 'red' : currentTurnTeam === 'blue' ? 'blue' : 'idle'
+  const turnTaskClass = turnClueClass
+  const activeTurnIsWritingClue = !hasClue
+  const turnActorName = useMemo(() => {
+    if (!currentTurnTeam) return null
+    const teamMembers = members.filter((m) => (m.role === 'owner' || m.role === 'player') && m.team === currentTurnTeam)
+    const actorIndex = teamMembers.findIndex((m) => Boolean(m.is_spymaster) === activeTurnIsWritingClue)
+    if (actorIndex < 0) return null
+    const actor = teamMembers[actorIndex]
+    return memberDisplayName(actor.user_id, actorIndex)
+  }, [members, currentTurnTeam, activeTurnIsWritingClue, profileByUserId, t])
+  const turnTaskText = !isGameActive || !currentTurnTeam
+    ? t('game.turn.waiting')
+    : activeTurnIsWritingClue
+      ? t('game.turn.actorWritingClue', { name: turnActorName ?? teamLabelText(currentTurnTeam) })
+      : t('game.turn.actorSolvingClue', { name: turnActorName ?? teamLabelText(currentTurnTeam) })
 
   useEffect(() => {
     if (isGameActive) setShowWinTrail(false)
@@ -1267,6 +1491,21 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
   const playable = members.filter((m) => m.role === 'owner' || m.role === 'player')
   const redTeam = playable.filter((m) => m.team === 'red')
   const blueTeam = playable.filter((m) => m.team === 'blue')
+  const unrevealedCards = useMemo(
+    () =>
+      cards
+        .filter((c) => !c.revealed)
+        .map((c) => ({ pos: c.pos, word: String(c.word ?? '').trim() }))
+        .sort((a, b) => a.pos - b.pos),
+    [cards]
+  )
+
+  function diceCardName(pos: number | null): string {
+    if (pos === null || !Number.isFinite(pos)) return '-'
+    const c = unrevealedCards.find((x) => x.pos === pos)
+    const w = String(c?.word ?? '').trim()
+    return w || `#${pos}`
+  }
 
   function memberDisplayName(userId: string, index: number): string {
     return displayNameOrFallback(profileByUserId[userId]?.displayName, `${t('game.member.player')} ${index + 1}`)
@@ -1320,7 +1559,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
   }
 
   const bg =
-    'radial-gradient(900px 520px at 50% 10%, rgba(255,255,255,0.08), rgba(0,0,0,0) 60%), #000'
+    'radial-gradient(1200px 680px at 50% -6%, rgba(160,190,255,0.14), rgba(0,0,0,0) 58%), radial-gradient(900px 520px at 84% 14%, rgba(255,105,105,0.12), rgba(0,0,0,0) 56%), radial-gradient(900px 520px at 12% 20%, rgba(100,145,255,0.16), rgba(0,0,0,0) 58%), linear-gradient(180deg, rgba(4,8,18,0.82), rgba(2,3,7,0.9) 72%), url("/assets/bg-room2.jpg") center / cover no-repeat'
   const panel = 'rgba(0,0,0,0.35)'
   const border = '1px solid rgba(255,255,255,0.10)'
   const navIcons = {
@@ -1339,18 +1578,18 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
 
   function cardBg(c: GameCard, hidden?: CardColor): string {
     if (c.revealed && c.revealed_color) {
-      if (c.revealed_color === 'blue') return 'linear-gradient(180deg, rgba(70,80,255,0.45), rgba(20,22,40,0.92))'
-      if (c.revealed_color === 'red') return 'linear-gradient(180deg, rgba(255,95,95,0.35), rgba(40,18,18,0.95))'
-      if (c.revealed_color === 'assassin') return 'linear-gradient(180deg, rgba(0,0,0,1), rgba(0,0,0,1))'
-      return 'linear-gradient(180deg, rgba(232,236,243,0.98), rgba(198,205,215,0.98))'
+      if (c.revealed_color === 'blue') return 'linear-gradient(180deg, rgba(40,100,215,0.92), rgba(18,46,114,0.98))'
+      if (c.revealed_color === 'red') return 'linear-gradient(180deg, rgba(196,52,70,0.94), rgba(104,20,30,0.98))'
+      if (c.revealed_color === 'assassin') return 'linear-gradient(180deg, rgba(26,28,34,0.98), rgba(8,9,12,1))'
+      return 'linear-gradient(180deg, rgba(205,212,224,0.98), rgba(148,158,176,0.98))'
     }
     if (hidden) {
-      if (hidden === 'blue') return 'linear-gradient(180deg, rgba(70,80,255,0.34), rgba(22,24,34,0.88))'
-      if (hidden === 'red') return 'linear-gradient(180deg, rgba(255,95,95,0.28), rgba(30,18,18,0.88))'
-      if (hidden === 'assassin') return 'linear-gradient(180deg, rgba(42,44,52,0.50), rgba(16,18,22,0.90))'
-      return 'linear-gradient(180deg, rgba(255,255,255,0.22), rgba(110,116,128,0.88))'
+      if (hidden === 'blue') return 'linear-gradient(180deg, rgba(56,112,226,0.54), rgba(22,42,96,0.92))'
+      if (hidden === 'red') return 'linear-gradient(180deg, rgba(214,62,82,0.5), rgba(98,24,34,0.92))'
+      if (hidden === 'assassin') return 'linear-gradient(180deg, rgba(56,58,66,0.66), rgba(14,16,20,0.96))'
+      return 'linear-gradient(180deg, rgba(182,168,142,0.6), rgba(116,106,90,0.94))'
     }
-    return 'linear-gradient(180deg, rgba(255,255,255,0.22), rgba(108,114,126,0.88))'
+    return 'linear-gradient(180deg, rgba(196,178,144,0.56), rgba(122,108,86,0.94))'
   }
 
   function fxClassFor(pos: number): string {
@@ -1362,23 +1601,26 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: bg, color: '#fff', display: 'grid', placeItems: 'center', padding: 18 }}>
+    <div className="oc-root" style={{ minHeight: '100vh', background: bg, color: '#fff', display: 'grid', placeItems: 'center', padding: 18 }}>
       <style>{`
+        .oc-root{
+          font-family: "Manrope", "Tajawal", "Avenir Next", "Segoe UI", "Noto Sans Arabic", sans-serif;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+          text-rendering: optimizeLegibility;
+          --oc-metal-1: rgba(255,255,255,0.09);
+          --oc-metal-2: rgba(255,255,255,0.03);
+          --oc-stroke: rgba(255,255,255,0.16);
+          --oc-gold: rgba(255,212,118,0.9);
+        }
         .oc-stage{
           isolation:isolate;
+          background: transparent !important;
+          border: 1px solid rgba(255,255,255,0.14) !important;
+          box-shadow: none !important;
         }
         .oc-stage::before{
-          content:'';
-          position:absolute;
-          inset:-28%;
-          pointer-events:none;
-          background:
-            radial-gradient(44% 30% at 18% 22%, rgba(255,120,120,0.14), rgba(0,0,0,0) 62%),
-            radial-gradient(42% 28% at 82% 18%, rgba(90,120,255,0.18), rgba(0,0,0,0) 64%),
-            radial-gradient(55% 40% at 50% 84%, rgba(255,225,120,0.08), rgba(0,0,0,0) 68%);
-          mix-blend-mode:screen;
-          animation: oc-ambient-swirl 12s ease-in-out infinite alternate;
-          z-index:0;
+          display: none;
         }
         .oc-turn-indicator{
           height: 42px;
@@ -1428,6 +1670,227 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           border-color: rgba(255,230,165,0.56);
           color: rgba(255,242,198,0.98);
           animation: none;
+        }
+        .oc-hud-row{
+          position: relative;
+          z-index: 2;
+          display: grid;
+          grid-template-columns: auto auto auto auto auto;
+          justify-content: center;
+          align-items: center;
+          gap: 12px;
+          padding: 6px 0 14px;
+        }
+        .oc-hud-dice-btn{
+          width: 68px;
+          height: 68px;
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.24);
+          background: linear-gradient(180deg, rgba(180,130,255,0.22), rgba(28,18,52,0.72));
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42), 0 14px 28px rgba(0,0,0,0.46);
+          display:grid;
+          place-items:center;
+          cursor:pointer;
+          transition: background .25s ease, box-shadow .25s ease, border-color .25s ease, opacity .2s ease;
+        }
+        .oc-hud-dice-btn:disabled{
+          opacity:.52;
+          cursor:default;
+        }
+        .oc-hud-dice-btn img{
+          width: 38px;
+          height: 38px;
+          object-fit: contain;
+        }
+        .oc-hud-helpers{
+          display:flex;
+          gap:8px;
+          align-items:center;
+          justify-content:flex-start;
+        }
+        .oc-hud-helper-btn{
+          width: 56px;
+          height: 56px;
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.24);
+          background: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(0,0,0,0.36));
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42), 0 12px 26px rgba(0,0,0,0.42);
+          display:grid;
+          place-items:center;
+          cursor:pointer;
+        }
+        .oc-hud-helper-btn:disabled{
+          opacity:.5;
+          cursor:default;
+        }
+        .oc-hud-helper-btn img{
+          width:30px;
+          height:30px;
+          object-fit:contain;
+        }
+        .oc-hud-turn-row{
+          position: relative;
+          z-index: 2;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 10px;
+          padding-bottom: 12px;
+        }
+        .oc-hud-turn-clue{
+          min-height: 42px;
+          min-width: 160px;
+          border-radius: 999px;
+          padding: 0 14px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid rgba(255,255,255,0.22);
+          box-shadow: 0 14px 28px rgba(0,0,0,0.44), inset 0 0 0 1px rgba(255,255,255,0.10);
+          text-transform: uppercase;
+          letter-spacing: .03em;
+          font-weight: 950;
+        }
+        .oc-hud-turn-clue-label{
+          font-size: 10px;
+          opacity: .84;
+          font-weight: 900;
+        }
+        .oc-hud-turn-clue-word{
+          font-size: 13px;
+          font-weight: 1000;
+        }
+        .oc-hud-turn-clue.red{
+          background: linear-gradient(180deg, rgba(255,105,105,0.36), rgba(70,20,20,0.82));
+          border-color: rgba(255,145,145,0.52);
+          color: rgba(255,226,226,0.98);
+        }
+        .oc-hud-turn-clue.blue{
+          background: linear-gradient(180deg, rgba(105,130,255,0.38), rgba(20,30,85,0.84));
+          border-color: rgba(165,190,255,0.52);
+          color: rgba(225,235,255,0.98);
+        }
+        .oc-hud-turn-clue.idle{
+          background: linear-gradient(180deg, rgba(225,225,225,0.20), rgba(40,40,46,0.82));
+          border-color: rgba(255,255,255,0.36);
+          color: rgba(242,244,255,0.95);
+        }
+        .oc-hud-turn-clue.done{
+          background: linear-gradient(180deg, rgba(255,220,125,0.30), rgba(58,44,12,0.82));
+          border-color: rgba(255,230,165,0.56);
+          color: rgba(255,242,198,0.98);
+        }
+        .oc-hud-turn-task{
+          min-height: 42px;
+          min-width: 220px;
+          border-radius: 999px;
+          padding: 0 14px;
+          display: inline-flex;
+          align-items: center;
+          border: 1px solid rgba(255,255,255,0.22);
+          box-shadow: 0 14px 28px rgba(0,0,0,0.44), inset 0 0 0 1px rgba(255,255,255,0.10);
+          text-transform: uppercase;
+          letter-spacing: .03em;
+          font-weight: 900;
+          font-size: 12px;
+          line-height: 1;
+          white-space: nowrap;
+        }
+        .oc-hud-turn-task.red{
+          background: linear-gradient(180deg, rgba(255,105,105,0.36), rgba(70,20,20,0.82));
+          border-color: rgba(255,145,145,0.52);
+          color: rgba(255,226,226,0.98);
+        }
+        .oc-hud-turn-task.blue{
+          background: linear-gradient(180deg, rgba(105,130,255,0.38), rgba(20,30,85,0.84));
+          border-color: rgba(165,190,255,0.52);
+          color: rgba(225,235,255,0.98);
+        }
+        .oc-hud-turn-task.idle{
+          background: linear-gradient(180deg, rgba(225,225,225,0.20), rgba(40,40,46,0.82));
+          border-color: rgba(255,255,255,0.36);
+          color: rgba(242,244,255,0.95);
+        }
+        .oc-hud-turn-task.done{
+          background: linear-gradient(180deg, rgba(255,220,125,0.30), rgba(58,44,12,0.82));
+          border-color: rgba(255,230,165,0.56);
+          color: rgba(255,242,198,0.98);
+        }
+        .oc-score-node{
+          min-width: 64px;
+          height: 52px;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          font-size: 34px;
+          font-weight: 1000;
+          border: 1px solid var(--oc-stroke);
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4), 0 12px 26px rgba(0,0,0,0.45);
+          position: relative;
+          overflow: hidden;
+        }
+        .oc-score-node::after{
+          content:'';
+          position:absolute;
+          inset:0;
+          background: linear-gradient(120deg, rgba(255,255,255,0.14), transparent 34%, transparent 66%, rgba(255,255,255,0.08));
+          pointer-events:none;
+        }
+        .oc-score-node.blue{
+          color: rgba(198,224,255,0.98);
+          border-color: rgba(120,170,255,0.54);
+          background: linear-gradient(180deg, rgba(74,116,255,0.45), rgba(14,28,80,0.9));
+        }
+        .oc-score-node.red{
+          color: rgba(255,218,218,0.98);
+          border-color: rgba(255,140,140,0.56);
+          background: linear-gradient(180deg, rgba(255,86,86,0.46), rgba(80,14,14,0.9));
+        }
+        .oc-mid-hud{
+          min-width: 180px;
+          border-radius: 14px;
+          border: 1px solid rgba(255,235,180,0.44);
+          background: linear-gradient(180deg, rgba(255,219,140,0.16), rgba(0,0,0,0.45));
+          padding: 7px 12px;
+          display: grid;
+          gap: 4px;
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42), 0 14px 30px rgba(0,0,0,0.45);
+        }
+        .oc-mid-hud-title{
+          font-size: 11px;
+          font-weight: 900;
+          text-transform: uppercase;
+          opacity: 0.86;
+          letter-spacing: 0.06em;
+          text-align: center;
+        }
+        .oc-mid-hud-bottom{
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          gap:8px;
+        }
+        .oc-mid-pill{
+          min-width: 34px;
+          height: 24px;
+          border-radius: 999px;
+          display:grid;
+          place-items:center;
+          border: 1px solid rgba(255,255,255,0.2);
+          background: rgba(255,255,255,0.12);
+          font-size: 12px;
+          font-weight: 1000;
+        }
+        .oc-mid-time{
+          padding: 2px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,225,160,0.5);
+          background: rgba(20,12,2,0.55);
+          color: rgba(255,232,178,0.98);
+          font-weight: 1000;
+          font-size: 22px;
+          line-height: 1.1;
+          letter-spacing: 0.04em;
         }
         .oc-nav-btn{
           display:inline-flex;
@@ -1597,6 +2060,25 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
 
         .oc-card{
           transform-origin: 50% 62%;
+          position: relative;
+          overflow: hidden;
+        }
+        .oc-card::before{
+          content:'';
+          position:absolute;
+          inset:0;
+          pointer-events:none;
+          background: linear-gradient(140deg, rgba(255,255,255,0.18), transparent 34%, transparent 72%, rgba(255,255,255,0.08));
+          opacity: 0.42;
+        }
+        .oc-card::after{
+          content:'';
+          position:absolute;
+          inset:2px;
+          border-radius: 13px;
+          pointer-events:none;
+          border: 1px solid rgba(255,255,255,0.2);
+          opacity: 0.45;
         }
         .oc-card-shell{
           position: relative;
@@ -1654,6 +2136,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
 
         .oc-card .oc-word{
           transition: letter-spacing .28s ease, transform .28s ease;
+          text-shadow: 0 1px 0 rgba(0,0,0,0.5), 0 0 8px rgba(0,0,0,0.22);
         }
         .oc-card.oc-card-interactive:hover .oc-word{
           letter-spacing: 1.2px;
@@ -1784,7 +2267,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         }
         .oc-game-layout{
           display:grid;
-          grid-template-columns: 210px minmax(0, 1fr) 210px;
+          grid-template-columns: 240px minmax(0, 1fr) 240px;
           gap: 14px;
           align-items: start;
         }
@@ -1794,7 +2277,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         }
         .oc-utility-row{
           display:grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr;
           gap: 10px;
           position: static;
           width: auto;
@@ -1818,22 +2301,39 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         .oc-cards-grid{
           display:grid;
           grid-template-columns: repeat(5, minmax(0, 1fr));
-          gap: 12px;
+          gap: 10px;
           order: 3;
+          padding: 10px;
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.36));
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42);
         }
         .oc-team-panel{
           border-radius: 18px;
           padding: 12px;
-          border: 1px solid rgba(255,255,255,0.16);
-          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42), 0 14px 34px rgba(0,0,0,0.45);
+          border: 1px solid rgba(255,255,255,0.2);
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5), 0 16px 36px rgba(0,0,0,0.52);
         }
         .oc-team-panel.red{
-          border-color: rgba(255,95,95,0.35);
-          background: linear-gradient(180deg, rgba(255,95,95,0.14), rgba(0,0,0,0.28));
+          border-color: rgba(255,118,118,0.42);
+          background: linear-gradient(180deg, rgba(255,95,95,0.2), rgba(12,2,2,0.36));
         }
         .oc-team-panel.blue{
-          border-color: rgba(90,140,255,0.38);
-          background: linear-gradient(180deg, rgba(90,140,255,0.16), rgba(0,0,0,0.30));
+          border-color: rgba(112,162,255,0.46);
+          background: linear-gradient(180deg, rgba(90,140,255,0.22), rgba(3,6,15,0.38));
+        }
+        .oc-team-panel.turn-active{
+          border-color: rgba(255,214,110,0.95) !important;
+          box-shadow:
+            inset 0 0 0 1px rgba(0,0,0,0.42),
+            0 0 0 1px rgba(255,214,110,0.45),
+            0 14px 34px rgba(0,0,0,0.45),
+            0 0 28px rgba(255,208,90,0.26);
+        }
+        .oc-team-panel.turn-dim{
+          filter: saturate(0.78) brightness(0.82);
+          opacity: 0.88;
         }
         .oc-side-tools{
           display:grid;
@@ -1948,6 +2448,22 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           }
         }
         @media (max-width: 1080px){
+          .oc-hud-row{ gap: 8px; grid-template-columns: auto auto auto; }
+          .oc-hud-helpers{
+            grid-column: 1 / -1;
+            justify-content: center;
+          }
+          .oc-hud-dice-btn{
+            width: 58px;
+            height: 58px;
+          }
+          .oc-hud-dice-btn img{
+            width: 32px;
+            height: 32px;
+          }
+          .oc-score-node{ min-width: 56px; height: 46px; font-size: 30px; }
+          .oc-mid-hud{ min-width: 150px; }
+          .oc-mid-time{ font-size: 18px; }
           .oc-game-layout{
             grid-template-columns: 1fr;
           }
@@ -1962,8 +2478,8 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           width: 'min(1380px, 100%)',
           borderRadius: 26,
           border,
-          background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.75)',
+          background: 'transparent',
+          boxShadow: 'none',
           padding: 16,
           position: 'relative',
           overflow: 'hidden'
@@ -1972,38 +2488,87 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         <div style={{ position: 'absolute', inset: 10, borderRadius: 18, border: '1px solid rgba(255,255,255,0.06)', pointerEvents: 'none' }} />
 
         {/* top counters */}
-        <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 12, paddingTop: 6, paddingBottom: 14 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(120,110,255,0.26)' }} title={t('game.counters.blueRemaining')}>
-            {blueLeft}
+        <div className="oc-hud-row">
+          <button
+            className="oc-hud-dice-btn"
+            aria-label={t('game.dice.roll')}
+            title={
+              diceUnlocked
+                ? diceUsed
+                  ? t('game.dice.usedTurn')
+                  : t('game.dice.roll')
+                : t('game.dice.streakProgress', { streak: myStreak, target: diceUnlockStreak })
+            }
+            disabled={!isGameActive || !diceUnlocked || diceUsed || busy !== null || dicePicker !== null}
+            onClick={handleRollDice}
+            style={{
+              background: `linear-gradient(0deg, rgba(255,208,104,0.98) 0%, rgba(255,208,104,0.98) ${diceFillPercent}%, rgba(28,18,52,0.78) ${diceFillPercent}%, rgba(28,18,52,0.78) 100%)`,
+              borderColor: diceUnlocked ? 'rgba(255,230,145,0.94)' : 'rgba(255,255,255,0.24)',
+              boxShadow: diceUnlocked
+                ? 'inset 0 0 0 1px rgba(72,38,0,0.38), 0 0 0 1px rgba(255,221,120,0.45), 0 14px 30px rgba(0,0,0,0.48)'
+                : 'inset 0 0 0 1px rgba(0,0,0,0.42), 0 14px 28px rgba(0,0,0,0.46)'
+            }}
+          >
+            <img src="/assets/icons/dice.svg" alt="" aria-hidden="true" />
+          </button>
+          <div className="oc-score-node red" title={t('game.counters.redRemaining')}>
+            {redLeft}
           </div>
 
-          <div
-            style={{
-              height: 42,
-              minWidth: 140,
-              borderRadius: 999,
-              padding: '0 12px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              border: '1px solid rgba(170,255,255,0.40)',
-              background: 'rgba(200,255,255,0.10)'
-            }}
-            title={t('game.counters.guessesTimer')}
-          >
-            <div style={{ width: 34, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, background: 'rgba(255,255,255,0.16)' }}>
-              {pillCount}
+          <div className="oc-mid-hud" title={t('game.counters.guessesTimer')}>
+            <div className="oc-mid-hud-title">{t('game.counters.guessesTimer')}</div>
+            <div className="oc-mid-hud-bottom">
+              <div className="oc-mid-pill">{pillCount}</div>
+              <div className="oc-mid-time">{timerSettings.useTurnTimer ? formatMMSS(turnLeft) : 'OFF'}</div>
             </div>
-            <div style={{ fontWeight: 900, opacity: 0.95 }}>{formatMMSS(turnLeft)}</div>
           </div>
+          <div className="oc-score-node blue" title={t('game.counters.blueRemaining')}>
+            {blueLeft}
+          </div>
+          <div className="oc-hud-helpers">
+            <button
+              className="oc-hud-helper-btn"
+              disabled={!isGameActive || busy !== null}
+              onClick={() => runHelper('time_cut')}
+              title={t('game.helper.timeCut')}
+              aria-label={t('game.helper.timeCut')}
+            >
+              <img className="oc-nav-icon-original" src={helperIcons.timeCut} alt="" aria-hidden="true" />
+            </button>
+            <button
+              className="oc-hud-helper-btn"
+              disabled={!isGameActive || busy !== null}
+              onClick={() => runHelper('random_peek')}
+              title={t('game.helper.randomPeek')}
+              aria-label={t('game.helper.randomPeek')}
+            >
+              <img className="oc-nav-icon-original" src={helperIcons.randomPeek} alt="" aria-hidden="true" />
+            </button>
+            <button
+              className="oc-hud-helper-btn"
+              disabled={!isGameActive || busy !== null}
+              onClick={() => runHelper('shuffle_unrevealed')}
+              title={t('game.helper.cardShuffle')}
+              aria-label={t('game.helper.cardShuffle')}
+            >
+              <img className="oc-nav-icon-original" src={helperIcons.shuffle} alt="" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        <div className="oc-hud-turn-row">
+          {turnClueWord ? (
+            <div className={`oc-hud-turn-clue ${turnClueClass}`} title={t('game.header.clue')}>
+              <span className="oc-hud-turn-clue-label">{t('game.header.clue')}</span>
+              <span className="oc-hud-turn-clue-word">{turnClueWord}</span>
+            </div>
+          ) : null}
           <div className={`oc-turn-indicator ${turnIndicatorClass}`} title="Current turn">
             <span className="oc-turn-dot" />
             <span>{turnIndicatorLabel}</span>
             {isGameActive && isMyTurn ? <span className="oc-turn-sub">{t('game.turn.yourTurn')}</span> : null}
           </div>
-
-          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,95,95,0.22)' }} title={t('game.counters.redRemaining')}>
-            {redLeft}
+          <div className={`oc-hud-turn-task ${turnTaskClass}`} title={turnTaskText}>
+            <span>{turnTaskText}</span>
           </div>
         </div>
 
@@ -2046,15 +2611,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
 
               {/* header */}
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div style={{ opacity: 0.92, fontWeight: 900 }}>
-                    {t('game.header.clue')}: <span style={{ opacity: 1 }}>{game.clue_word ?? t('game.symbol.none')}</span>
-                    {game.clue_number !== null ? <span style={{ opacity: 0.85 }}> ({game.clue_number})</span> : null}
-                  </div>
-                  <div style={{ opacity: 0.78, fontWeight: 800, fontSize: 12 }}>
-                    {t('game.header.you')}: {teamLabelText(myTeam)} • {roleLabel(amSpymaster)} • {t('game.header.streak')}: {myStreak}
-                    {!isGameActive && effectiveWinner ? <span> • {t('game.header.winner')}: {teamLabelText(effectiveWinner)}</span> : null}                  </div>
-                </div>
+                <div />
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   {amSpymaster && (
@@ -2079,7 +2636,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
 
               {/* layout */}
               <div className="oc-game-layout">
-                <div className="oc-team-panel red">
+                <div className={`oc-team-panel red ${currentTurnTeam === 'red' ? 'turn-active' : currentTurnTeam === 'blue' ? 'turn-dim' : ''}`}>
                   <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(255,220,220,0.98)' }}>{t('game.team.redTeam')}</div>
                   <div style={{ display: 'grid', gap: 8 }}>
                     {redTeam.length === 0 ? (
@@ -2272,50 +2829,9 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                     })}
                   </div>
 
-                  <div className="oc-utility-row">
-                    <div style={{ padding: 12, borderRadius: 18, border, background: panel }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                        <div style={{ fontWeight: 900 }}>{t('game.dice.title')}</div>
-                        <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>
-                          {diceUnlocked ? (diceUsed ? t('game.dice.usedTurn') : t('game.dice.ready')) : t('game.dice.streakProgress', { streak: roundCorrectStreak })}
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
-                        <button disabled={!isGameActive || !diceUnlocked || diceUsed || busy !== null} onClick={handleRollDice} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive || !diceUnlocked || diceUsed ? 0.55 : 1 }}>
-                          {t('game.dice.roll')}
-                        </button>
-                        <div style={{ fontSize: 12, opacity: 0.82, fontWeight: 800 }}>
-                          {rolledDiceOption ? t('game.dice.lastRoll', { option: diceOptionLabel(rolledDiceOption) }) : t('game.dice.rollHint')}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ padding: 12, borderRadius: 18, border, background: panel }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                      <div style={{ fontWeight: 900 }}>{t('game.helper.title')}</div>
-                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>{t('game.helper.oncePerGame')}</div>
-                    </div>
-
-                    <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
-                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('time_cut')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
-                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.timeCut} alt="" aria-hidden="true" />
-                        {t('game.helper.timeCut')}
-                      </button>
-                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('random_peek')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
-                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.randomPeek} alt="" aria-hidden="true" />
-                        {t('game.helper.randomPeek')}
-                      </button>
-                      <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('shuffle_unrevealed')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
-                        <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.shuffle} alt="" aria-hidden="true" />
-                        {t('game.helper.cardShuffle')}
-                      </button>
-                    </div>
-                  </div>
-                </div>
                 </div>
 
-                <div className="oc-team-panel blue">
+                <div className={`oc-team-panel blue ${currentTurnTeam === 'blue' ? 'turn-active' : currentTurnTeam === 'red' ? 'turn-dim' : ''}`}>
                   <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(220,230,255,0.98)' }}>{t('game.team.blueTeam')}</div>
                   <div style={{ display: 'grid', gap: 8 }}>
                     {blueTeam.length === 0 ? (
@@ -2422,6 +2938,74 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button onClick={() => setShowRules(false)} style={{ padding: '9px 12px', borderRadius: 10, border, background: 'rgba(255,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>
                   {t('game.actions.close')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {dicePicker && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 12, background: 'rgba(0,0,0,0.66)', display: 'grid', placeItems: 'center', padding: 14 }}>
+            <div style={{ width: 'min(760px, 95vw)', borderRadius: 16, border, background: 'rgba(0,0,0,0.86)', boxShadow: '0 24px 70px rgba(0,0,0,0.72)', padding: 16, display: 'grid', gap: 12 }}>
+              <div style={{ fontWeight: 1000, fontSize: 18 }}>{diceOptionLabel(dicePicker.option)}</div>
+              <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.5, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.05)' }}>
+                {dicePicker.option === 'swap'
+                  ? dicePicker.posA === null
+                    ? t('game.dice.swapStep1')
+                    : dicePicker.posB === null
+                      ? t('game.dice.swapStep2', { pos: diceCardName(dicePicker.posA) })
+                      : t('game.dice.swapSelected', { posA: diceCardName(dicePicker.posA), posB: diceCardName(dicePicker.posB) })
+                  : t('game.dice.singleTargetHelp')}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {unrevealedCards.map((c) => {
+                  const selected = c.pos === dicePicker.posA || c.pos === dicePicker.posB
+                  return (
+                    <button
+                      key={`dice-pos-${c.pos}`}
+                      type="button"
+                      onClick={() => {
+                        if (dicePicker.option === 'swap') {
+                          if (dicePicker.posA === null) {
+                            setDicePicker({ ...dicePicker, posA: c.pos })
+                            return
+                          }
+                          if (dicePicker.posB === null) {
+                            setDicePicker({ ...dicePicker, posB: c.pos })
+                            return
+                          }
+                          setDicePicker({ ...dicePicker, posA: c.pos, posB: null })
+                          return
+                        }
+                        setDicePicker({ ...dicePicker, posA: c.pos })
+                      }}
+                      style={{
+                        minWidth: 88,
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        border: selected ? '1px solid rgba(255,220,120,0.72)' : '1px solid rgba(255,255,255,0.22)',
+                        background: selected ? 'rgba(255,220,120,0.22)' : 'rgba(255,255,255,0.08)',
+                        color: '#fff',
+                        fontWeight: 900,
+                        cursor: 'pointer'
+                      }}
+                      title={`${c.word} (#${c.pos})`}
+                    >
+                      {c.word || `#${c.pos}`}
+                    </button>
+                  )
+                })}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button onClick={() => setDicePicker(null)} style={{ padding: '9px 12px', borderRadius: 10, border, background: 'rgba(255,255,255,0.10)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>
+                  {t('game.actions.close')}
+                </button>
+                <button
+                  onClick={submitDicePicker}
+                  disabled={busy !== null || (dicePicker.option === 'swap' ? dicePicker.posA === null || dicePicker.posB === null || dicePicker.posA === dicePicker.posB : dicePicker.posA === null)}
+                  style={{ padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(170,255,255,0.42)', background: 'rgba(200,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}
+                >
+                  {t('game.dice.apply')}
                 </button>
               </div>
             </div>

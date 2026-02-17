@@ -310,7 +310,9 @@
       "redTeamTurn": "دور الفريق الأحمر",
       "blueTeamTurn": "دور الفريق الأزرق",
       "waiting": "بانتظار الدور",
-      "yourTurn": "دورك"
+      "yourTurn": "دورك",
+      "actorWritingClue": "{{name}} يكتب تلميحًا",
+      "actorSolvingClue": "{{name}} يحل التلميح"
     },
     "counters": {
       "blueRemaining": "المتبقي للأزرق",
@@ -386,10 +388,15 @@
       "title": "النرد",
       "usedTurn": "مستخدم هذا الدور",
       "ready": "جاهز",
-      "streakProgress": "السلسلة {{streak}}/3",
+      "streakProgress": "السلسلة {{streak}}/{{target}}",
       "roll": "رمي النرد",
+      "apply": "تطبيق",
       "lastRoll": "آخر رمية: {{option}}",
       "rollHint": "ارمِ للحصول على قدرة نرد عشوائية.",
+      "singleTargetHelp": "اختر بطاقة واحدة غير مكشوفة كهدف.",
+      "swapStep1": "الخطوة 1: اختر البطاقة الأولى غير المكشوفة (A).",
+      "swapStep2": "الخطوة 2: اختر بطاقة مختلفة غير مكشوفة (B). البطاقة A الحالية: {{pos}}.",
+      "swapSelected": "تم اختيار A: {{posA}} و B: {{posB}}. اضغط تطبيق.",
       "doubleHint": "تلميح مضاعف",
       "sabotageReassign": "إعادة توزيع تخريبي",
       "stealReassign": "إعادة توزيع بالسرقة",
