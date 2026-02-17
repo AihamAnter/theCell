@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import HomePage from '../components/HomePage'
 import { supabase } from '../lib/supabaseClient'
-import { createLobby, joinLobby, joinLobbyAsSpectator, quickMatch } from '../lib/lobbies'
+import { createLobby, joinLobby, joinLobbyAsSpectator } from '../lib/lobbies'
 import {
   ensureSession,
   getCurrentUser,
@@ -208,26 +208,6 @@ const { t } = useTranslation()
     }
   }
 
-  async function handleQuickMatch() {
-    if (uiDisabled) return
-    try {
-      setBusy(t('home.busy.findingMatch'))
-      const res = await quickMatch({ mode: 'classic' })
-
-      writeStr('oneclue_last_lobby_code', res.lobbyCode)
-      writeStr('oneclue_last_lobby_role', 'player')
-      setLastLobbyCode(res.lobbyCode)
-      setLastLobbyRole('player')
-
-      navigate(`/lobby/${res.lobbyCode}`)
-    } catch (err) {
-      console.error('[home] quick match failed:', err)
-      addToast(err instanceof Error ? err.message : supaErr(err), 'error')
-    } finally {
-      setBusy(null)
-    }
-  }
-
   function handleForgetLast() {
     clearKey('oneclue_last_lobby_code')
     clearKey('oneclue_last_lobby_role')
@@ -235,17 +215,6 @@ const { t } = useTranslation()
     setLastLobbyRole('')
     addToast(t('home.toasts.forgotLast'), 'success')
 
-  }
-
-  function openSettings() {
-    const code = (lastLobbyCode ?? '').trim()
-    if (!code) {
-      addToast(t('home.toasts.noRecentLobby'), 'info')
-
-
-      return
-    }
-    navigate(`/settings/${code}`)
   }
 
   async function handleSignIn(email: string, password: string) {
@@ -377,9 +346,7 @@ const { t } = useTranslation()
         onJoinLobby={handleJoin}
         onSpectateLobby={handleSpectate}
         onCreateLobby={handleCreate}
-        onQuickMatch={handleQuickMatch}
         onOpenProfile={() => navigate('/profile')}
-        onOpenSettings={openSettings}
         lastLobbyCode={lastLobbyCode || null}
         onRejoinLast={() => navigate(lobbyUrl(lastLobbyCode, lastLobbyRole || null))}
         onForgetLast={handleForgetLast}

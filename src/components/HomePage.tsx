@@ -5,9 +5,7 @@ type HomePageProps = {
   onJoinLobby: (code: string) => void
   onSpectateLobby: (code: string) => void
   onCreateLobby: (mode: 'classic' | 'powers') => void
-  onQuickMatch: () => void
   onOpenProfile: () => void
-  onOpenSettings: () => void
   lastLobbyCode?: string | null
   onRejoinLast?: () => void
   onForgetLast?: () => void
@@ -24,9 +22,7 @@ export default function HomePage({
   onJoinLobby,
   onSpectateLobby,
   onCreateLobby,
-  onQuickMatch,
   onOpenProfile,
-  onOpenSettings,
   lastLobbyCode,
   onRejoinLast,
   onForgetLast,
@@ -67,6 +63,9 @@ export default function HomePage({
                   {t('home.account.signedInAs', { email: authEmail || 'account user' })}
                 </p>
                 <div className="homeBtnStack">
+                  <button className="homeBtnPrimary" type="button" onClick={onOpenProfile}>
+                    {t('home.other.profile')}
+                  </button>
                   <button className="homeBtnGhost" type="button" onClick={onLogout} disabled={authBusy}>
                     {t('home.account.logout')}
                   </button>
@@ -96,6 +95,9 @@ export default function HomePage({
                   />
                 </div>
                 <div className="homeBtnStack" style={{ marginTop: 10 }}>
+                  <button className="homeBtnPrimary" type="button" onClick={onOpenProfile}>
+                    {t('home.other.profile')}
+                  </button>
                   <button
                     className="homeBtnPrimary"
                     type="button"
@@ -186,21 +188,6 @@ export default function HomePage({
             </div>
           </section>
 
-          <section className="homeCard homeCardQuick" aria-label="Other options">
-            <h2> {t('home.other.title')}</h2>
-            <p>{t('home.other.desc')}.</p>
-            <div className="homeBtnStack">
-              <button className="homeBtnGhost" type="button" onClick={onQuickMatch}>
-               {t('home.other.quickMatch')}
-              </button>
-              <button className="homeBtnGhost" type="button" onClick={onOpenSettings}>
-                {t('home.other.openSettings')}
-              </button>
-              <button className="homeBtnGhost" type="button" onClick={onOpenProfile}>
-                {t('home.other.profile')}
-              </button>
-            </div>
-          </section>
         </div>
       </div>
     </div>

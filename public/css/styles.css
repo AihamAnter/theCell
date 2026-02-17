@@ -336,6 +336,291 @@ textarea{
     rgba(0,0,0,.30);
 }
 
+/* Home page redesign (scoped) */
+.homeScene{
+  --home-accent: #ff7d2f;
+  --home-accent-soft: rgba(255,125,47,.26);
+  --home-cool: #2fd3bf;
+  --home-cool-soft: rgba(47,211,191,.20);
+  --home-ink: #f8eee2;
+  --home-muted: rgba(248,238,226,.76);
+  position: relative;
+  padding: 36px 20px 40px;
+}
+
+.homeScene::before{
+  content:"";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(980px 540px at 8% 4%, rgba(255,126,66,.22), transparent 62%),
+    radial-gradient(860px 500px at 95% 6%, rgba(58,218,198,.20), transparent 62%),
+    conic-gradient(from 220deg at 50% 120%, rgba(255,125,47,.10), rgba(47,211,191,.10), rgba(255,125,47,.10));
+  opacity: .9;
+}
+
+.homeScene .homeFrame{
+  width:min(1240px, 100%);
+  border-radius: 34px;
+  border:1px solid rgba(248,238,226,.22);
+  background:
+    linear-gradient(142deg, rgba(255,255,255,.14), rgba(255,255,255,.02) 48%),
+    rgba(8,10,14,.76);
+  box-shadow:
+    0 40px 100px rgba(0,0,0,.58),
+    inset 0 1px 0 rgba(255,255,255,.15);
+  padding:30px 28px;
+  position: relative;
+  overflow: hidden;
+  display:grid;
+  gap:20px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr);
+  grid-template-areas:
+    "hero side"
+    "actions side";
+}
+
+.homeScene .homeFrame::before{
+  content:"";
+  position:absolute;
+  inset: -40px -10px auto -10px;
+  height: 260px;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255,125,47,.20), rgba(47,211,191,.20)),
+    radial-gradient(700px 220px at 20% 0%, rgba(255,192,132,.24), transparent 65%);
+  mask-image: linear-gradient(180deg, rgba(0,0,0,.9), transparent 74%);
+}
+
+.homeScene .homeHeader{
+  grid-area: hero;
+  text-align: left;
+  margin-bottom: 0;
+  padding: 8px 2px 2px;
+  z-index: 1;
+}
+
+.homeScene .homeEyebrow{
+  color: rgba(248,238,226,.62);
+}
+
+.homeScene .homeTitle{
+  margin: 10px 0 10px;
+  font-size: clamp(44px, 7vw, 76px);
+  line-height: .9;
+  letter-spacing: .015em;
+  color: var(--home-ink);
+  text-shadow: 0 14px 38px rgba(0,0,0,.38);
+}
+
+.homeScene .homeSubtitle{
+  margin: 0;
+  color: var(--home-muted);
+  max-width: 62ch;
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+.homeScene .homeHeroChips{
+  justify-content:flex-start;
+  margin-top: 16px;
+  gap: 10px;
+}
+
+.homeScene .homeHeroChip{
+  padding:8px 12px;
+  border-radius: 999px;
+  border:1px solid rgba(248,238,226,.25);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.20), rgba(255,255,255,.04)),
+    rgba(0,0,0,.22);
+  color: rgba(248,238,226,.92);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 8px 18px rgba(0,0,0,.22);
+}
+
+.homeScene .homeTopCards{
+  grid-area: side;
+  margin-bottom: 0;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  z-index: 1;
+}
+
+.homeScene .homeGrid{
+  grid-area: actions;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap:16px;
+  z-index: 1;
+}
+
+.homeScene .homeCard{
+  border-radius: 24px;
+  border:1px solid rgba(248,238,226,.20);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.03)),
+    rgba(0,0,0,.30);
+  box-shadow:
+    0 14px 34px rgba(0,0,0,.35),
+    inset 0 1px 0 rgba(255,255,255,.10),
+    inset 0 0 0 1px rgba(0,0,0,.46);
+  padding:20px;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+
+.homeScene .homeCard:hover{
+  transform: translateY(-3px);
+  border-color: rgba(248,238,226,.32);
+  box-shadow:
+    0 20px 42px rgba(0,0,0,.42),
+    inset 0 1px 0 rgba(255,255,255,.14),
+    inset 0 0 0 1px rgba(0,0,0,.50);
+}
+
+.homeScene .homeCardFeature{
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.04)),
+    linear-gradient(145deg, rgba(255,125,47,.18), rgba(47,211,191,.10) 70%),
+    rgba(0,0,0,.30);
+}
+
+.homeScene .homeCardJoin{
+  background:
+    linear-gradient(180deg, rgba(47,211,191,.20), rgba(255,255,255,.03)),
+    rgba(0,0,0,.30);
+}
+
+.homeScene .homeCardCreate{
+  background:
+    linear-gradient(180deg, rgba(255,125,47,.20), rgba(255,255,255,.03)),
+    rgba(0,0,0,.30);
+}
+
+.homeScene .homeCard h2{
+  font-size: 27px;
+  color: var(--home-ink);
+}
+
+.homeScene .homeCard p{
+  color: var(--home-muted);
+  font-weight: 400;
+}
+
+.homeScene .homeInput{
+  border:1px solid rgba(248,238,226,.26);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.02)),
+    rgba(5,8,12,.56);
+  color: #fff6ec;
+  border-radius: 14px;
+  padding:12px 13px;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+.homeScene .homeInput::placeholder{
+  color: rgba(248,238,226,.48);
+}
+
+.homeScene .homeInput:focus{
+  border-color: rgba(255,175,129,.74);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.03)),
+    rgba(5,8,12,.62);
+  box-shadow:
+    0 0 0 3px rgba(255,125,47,.24),
+    0 0 18px rgba(255,125,47,.18);
+}
+
+.homeScene .homeBtnPrimary,
+.homeScene .homeBtnGhost{
+  min-height: 46px;
+  border-radius: 14px;
+  border:1px solid transparent;
+  font-weight:1000;
+  letter-spacing: .02em;
+  transition: transform .11s ease, box-shadow .16s ease, filter .16s ease;
+}
+
+.homeScene .homeBtnPrimary{
+  color:#fff4e8;
+  border-color: rgba(255,176,132,.46);
+  background:
+    linear-gradient(180deg, rgba(255,152,84,.52), rgba(255,125,47,.26)),
+    linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.02));
+  box-shadow:
+    0 12px 24px rgba(255,125,47,.26),
+    inset 0 1px 0 rgba(255,223,195,.20);
+}
+
+.homeScene .homeBtnGhost{
+  color: rgba(234,253,249,.92);
+  border-color: rgba(133,232,217,.38);
+  background:
+    linear-gradient(180deg, rgba(47,211,191,.24), rgba(47,211,191,.10)),
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.02));
+  box-shadow: 0 10px 22px rgba(47,211,191,.16), inset 0 1px 0 rgba(255,255,255,.11);
+}
+
+.homeScene .homeBtnPrimary:hover,
+.homeScene .homeBtnGhost:hover{
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.homeScene .homeBtnPrimary:active,
+.homeScene .homeBtnGhost:active{
+  transform: translateY(1px);
+}
+
+.homeScene .homeBtnPrimary:disabled,
+.homeScene .homeBtnGhost:disabled{
+  opacity:.56;
+  cursor:not-allowed;
+}
+
+@media (max-width: 1080px){
+  .homeScene .homeFrame{
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "hero"
+      "side"
+      "actions";
+  }
+
+  .homeScene .homeTopCards{
+    display:grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px){
+  .homeScene{
+    padding: 20px 12px 24px;
+  }
+
+  .homeScene .homeFrame{
+    padding:18px 16px;
+    border-radius: 22px;
+  }
+
+  .homeScene .homeTitle{
+    font-size: clamp(34px, 12vw, 50px);
+  }
+
+  .homeScene .homeSubtitle{
+    font-size: 15px;
+  }
+
+  .homeScene .homeTopCards{
+    grid-template-columns: 1fr;
+  }
+
+  .homeScene .homeGrid{
+    grid-template-columns: 1fr;
+  }
+}
+
 .profileScene{
   min-height:100vh;
   display:flex;

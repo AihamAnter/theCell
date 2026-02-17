@@ -161,6 +161,9 @@
       "notYet": "not yet"
     },
     "actions": {
+      "chooseTeam": "Choose your team",
+      "switchToRed": "Switch to Red",
+      "switchToBlue": "Switch to Blue",
       "setReady": "Set Ready",
       "setNotReady": "Set Not Ready",
       "startGame": "Start Game",

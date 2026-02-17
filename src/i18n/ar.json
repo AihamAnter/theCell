@@ -161,6 +161,9 @@
       "notYet": "ليس بعد"
     },
     "actions": {
+      "chooseTeam": "اختر فريقك",
+      "switchToRed": "الانتقال إلى الأحمر",
+      "switchToBlue": "الانتقال إلى الأزرق",
       "setReady": "تعيين جاهز",
       "setNotReady": "تعيين غير جاهز",
       "startGame": "ابدأ اللعبة",

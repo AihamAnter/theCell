@@ -381,11 +381,23 @@ export default function LobbyRoute() {
     if (!lobby) return
     try {
       setBusy(t('lobby.busy.movingToTeam', { team: t(`lobby.team.${team}`) }))
-      const { error } = await supabase.rpc('set_member_team', {
-        p_lobby_id: lobby.id,
-        p_user_id: targetUserId,
-        p_team: team
-      })
+      const isSelf = Boolean(myUserId && targetUserId === myUserId)
+
+      const { error } = isSelf
+        ? await supabase
+            .from('lobby_members')
+            .update({
+              team,
+              // Moving teams as self always drops leader role to avoid invalid setup states.
+              is_spymaster: false
+            })
+            .eq('lobby_id', lobby.id)
+            .eq('user_id', targetUserId)
+        : await supabase.rpc('set_member_team', {
+            p_lobby_id: lobby.id,
+            p_user_id: targetUserId,
+            p_team: team
+          })
       if (error) throw error
       await refreshMembers(lobby.id, false)
     } catch (err) {
@@ -395,6 +407,11 @@ export default function LobbyRoute() {
     } finally {
       setBusy(null)
     }
+  }
+
+  async function handleSetMyTeam(team: 'red' | 'blue') {
+    if (!myUserId) return
+    await handleSetTeam(myUserId, team)
   }
 
   async function handleToggleSpymaster(targetUserId: string, makeSpymaster: boolean) {
@@ -502,6 +519,7 @@ export default function LobbyRoute() {
       ? t('lobby.role.spymaster')
       : t('lobby.role.operative')
   const myTeamLabel = amSpectator ? '-' : myRow?.team ? t(`lobby.team.${myRow.team}`) : '-'
+  const canSelfChangeTeam = Boolean(myRow && !amSpectator && lobby?.status === 'open')
   const redMembers = members.filter((m) => m.team === 'red' && (m.role === 'owner' || m.role === 'player'))
   const blueMembers = members.filter((m) => m.team === 'blue' && (m.role === 'owner' || m.role === 'player'))
   const spectators = members.filter((m) => m.role === 'spectator')
@@ -983,6 +1001,38 @@ export default function LobbyRoute() {
                   <div>{t('lobby.setup.blue')}: {t('lobby.role.spymaster')} <b>{blueSpy}</b>, {t('lobby.setup.operatives')} <b>{blueOps}</b></div>
                   {requireReady && <div>{t('lobby.setup.readyRequired')}: <b>{readyOk ? t('lobby.setup.ok') : t('lobby.setup.notYet')}</b></div>}
                 </div>
+
+                {canSelfChangeTeam && (
+                  <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, opacity: 0.92, fontWeight: 800 }}>{t('lobby.actions.chooseTeam')}:</span>
+                    <button
+                      onClick={() => handleSetMyTeam('red')}
+                      disabled={busy !== null || myRow?.team === 'red'}
+                      style={{
+                        ...btnBase,
+                        padding: '7px 10px',
+                        fontSize: 12,
+                        borderColor: myRow?.team === 'red' ? 'rgba(255,120,120,0.58)' : 'rgba(255,120,120,0.36)',
+                        opacity: myRow?.team === 'red' ? 1 : 0.9
+                      }}
+                    >
+                      {t('lobby.actions.switchToRed')}
+                    </button>
+                    <button
+                      onClick={() => handleSetMyTeam('blue')}
+                      disabled={busy !== null || myRow?.team === 'blue'}
+                      style={{
+                        ...btnBase,
+                        padding: '7px 10px',
+                        fontSize: 12,
+                        borderColor: myRow?.team === 'blue' ? 'rgba(120,160,255,0.64)' : 'rgba(120,160,255,0.36)',
+                        opacity: myRow?.team === 'blue' ? 1 : 0.9
+                      }}
+                    >
+                      {t('lobby.actions.switchToBlue')}
+                    </button>
+                  </div>
+                )}
 
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button
