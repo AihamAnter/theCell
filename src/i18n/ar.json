@@ -5,8 +5,8 @@
     "connectionErrorTitle": "خطأ في الاتصال"
   },
   "home": {
-    "title": "مركز لوبي OneClue",
-    "subtitle": "كلاسيك 5×5 — لعبة اجتماعية",
+    "subtitle": "لعبة اجتماعية",
+    "title": "الخلية",
     "desc": "أنشئ مباريات خاصة، ادخل بسرعة، أو شاهد أصدقاءك مباشرة.",
     "badges": {
       "grid": "شبكة 25 بطاقة",
@@ -28,8 +28,7 @@
       "title": "آخر لوبي",
       "code": "الكود: {{code}}",
       "rejoin": "دخول من جديد",
-      "forget": "نسيان",
-      "forgotToast": "تم نسيان آخر لوبي."
+      "forget": "نسيان"
     },
     "join": {
       "title": "الدخول إلى لوبي",
@@ -51,14 +50,6 @@
       "openSettings": "الإعدادات",
       "profile": "الملف الشخصي"
     },
-    "toasts": {
-      "noRecentLobby": "لا يوجد لوبي حديث.\nادخل لوبي أولاً.",
-      "signedIn": "تم تسجيل الدخول.",
-      "creatingAccount": "تم إنشاء الحساب.\nافحص بريدك إذا كان تأكيد البريد مفعّل.",
-      "guestUpgraded": "تم ترقية حساب الضيف.",
-      "nowGuest": "أنت الآن تلعب كضيف.",
-      "continueGuest": "تمت المتابعة كضيف."
-    },
     "busy": {
       "creatingLobby": "جاري إنشاء اللوبي…",
       "creatingPowersLobby": "جاري إنشاء لوبي القدرات…",
@@ -69,68 +60,365 @@
       "creatingAccount": "جاري إنشاء حساب...",
       "loggingOut": "جاري تسجيل الخروج..."
     },
-    "errors": {
+    "toasts": {
+      "forgotLast": "تم نسيان آخر لوبي.",
+      "noRecentLobby": "لا يوجد لوبي حديث.\nادخل لوبي أولاً.",
+      "signedIn": "تم تسجيل الدخول.",
+      "guestUpgraded": "تم ترقية حساب الضيف.",
+      "accountCreated": "تم إنشاء الحساب.\nافحص بريدك إذا كان تأكيد البريد مفعّل.",
+      "nowGuest": "أنت الآن تلعب كضيف.",
+      "continueGuest": "تمت المتابعة كضيف."
+    },
+    "screens": {
+      "loadingKicker": "كلاسيك 5×5",
+      "loadingTitle": "OneClue",
+      "loading": "جاري التحميل…",
       "couldNotStart": "لم يتم تشغيل التطبيق.",
-      "reload": "إعادة تحميل",
-      "loading": "جاري التحميل…"
+      "errorTitle": "خطأ",
+      "reload": "إعادة تحميل"
+    }
+  },
+  "lobby": {
+    "nav": {
+      "home": "الرئيسية",
+      "settings": "الإعدادات",
+      "profile": "الملف الشخصي",
+      "leaveLobby": "مغادرة اللوبي",
+      "english": "English",
+      "arabic": "العربية"
+    },
+    "loading": "جارٍ الدخول والتحميل...",
+    "error": "خطأ",
+    "presence": {
+      "online": "متصل",
+      "away": "غير متصل"
+    },
+    "labels": {
+      "ready": "جاهز",
+      "yes": "نعم",
+      "no": "لا",
+      "player": "لاعب"
+    },
+    "team": {
+      "red": "أحمر",
+      "blue": "أزرق"
+    },
+    "role": {
+      "owner": "المالك",
+      "spymaster": "قائد",
+      "operative": "عميل",
+      "spectator": "مشاهد"
+    },
+    "busy": {
+      "movingToTeam": "جارٍ النقل إلى {{team}}...",
+      "makingSpymaster": "جارٍ جعله قائدًا...",
+      "makingOperative": "جارٍ جعله عميلًا...",
+      "startingGame": "جارٍ بدء اللعبة...",
+      "settingReady": "جارٍ التبديل إلى جاهز...",
+      "settingNotReady": "جارٍ التبديل إلى غير جاهز...",
+      "leaving": "جارٍ المغادرة..."
+    },
+    "leave": {
+      "title": "مغادرة اللوبي؟",
+      "body": "يمكنك العودة باستخدام كود اللوبي.",
+      "cancel": "إلغاء",
+      "confirm": "مغادرة"
+    },
+    "panels": {
+      "lobby": "اللوبي",
+      "setup": "إعداد اللعبة"
+    },
+    "status": {
+      "open": "مفتوح",
+      "in_game": "داخل اللعبة",
+      "closed": "مغلق"
+    },
+    "meta": {
+      "you": "أنت",
+      "team": "الفريق",
+      "role": "الدور",
+      "owner": "المالك",
+      "youOwner": "أنت",
+      "otherOwner": "لاعب آخر",
+      "ready": "الجاهزون",
+      "spectating": "أنت في وضع المشاهدة. إجراءات الفريق معطلة."
+    },
+    "copy": {
+      "codeLabel": "الكود",
+      "inviteLabel": "رابط الدعوة",
+      "code": "نسخ الكود",
+      "invite": "نسخ رابط الدعوة",
+      "copied": "تم نسخ {{label}}",
+      "copiedManual": "تم النسخ يدويًا",
+      "prompt": "انسخ {{label}}:"
+    },
+    "setup": {
+      "red": "الفريق الأحمر",
+      "blue": "الفريق الأزرق",
+      "operatives": "عملاء",
+      "readyRequired": "الجاهزية مطلوبة",
+      "ok": "مكتمل",
+      "notYet": "ليس بعد"
+    },
+    "actions": {
+      "setReady": "تعيين جاهز",
+      "setNotReady": "تعيين غير جاهز",
+      "startGame": "ابدأ اللعبة",
+      "requireReady": "اشترط جاهزية الجميع قبل البدء"
+    },
+    "hints": {
+      "needSetup": "تحتاج قائدًا واحدًا + عميلًا واحدًا لكل فريق{{extra}}.",
+      "plusReady": "+ مع جاهزية الجميع"
+    },
+    "columns": {
+      "red": "الفريق الأحمر ({{count}})",
+      "blue": "الفريق الأزرق ({{count}})",
+      "spectators": "المشاهدون ({{count}})"
+    },
+    "empty": {
+      "noPlayers": "لا يوجد لاعبون في هذا الفريق.",
+      "noSpectators": "لا يوجد مشاهدون."
+    },
+    "info": {
+      "locked": "الفرق والأدوار مقفلة عندما لا يكون اللوبي مفتوحًا."
     }
   },
   "profile": {
-    "title": "الملف الشخصي",
-    "subtitle": "مركز الحساب",
-    "desc": "تحكم بالهوية وتفضيلات اللعبة والخصوصية وأمان الحساب.",
-    "backToLobby": "عودة للّوبي",
-    "returnToGame": "عودة للعبة",
-    "loading": "جاري التحميل…",
-    "error": "خطأ",
-    "saved": "تم الحفظ",
+    "header": {
+      "eyebrow": "مركز الحساب",
+      "title": "الملف الشخصي",
+      "subtitle": "تحكم بالهوية وتفضيلات اللعبة والخصوصية وأمان الحساب.",
+      "userId": "معرّف المستخدم"
+    },
+    "loading": "جاري التحميل...",
+    "errorTitle": "خطأ",
     "sections": {
-      "basic": "معلومات أساسية",
-      "prefs": "تفضيلات اللعبة",
+      "basicInfo": "معلومات أساسية",
+      "preferences": "تفضيلات اللعبة",
       "privacy": "الخصوصية",
-      "notifs": "الإشعارات",
-      "stats": "إحصائيات اللعبة",
+      "notifications": "الإشعارات",
+      "statistics": "إحصائيات اللعبة",
       "security": "الأمان",
-      "actions": "إجراءات الحساب"
+      "accountActions": "إجراءات الحساب"
     },
     "fields": {
       "displayName": "الاسم المعروض",
       "username": "اسم المستخدم",
-      "email": "البريد",
+      "email": "البريد الإلكتروني",
       "avatarUrl": "رابط الصورة",
       "bio": "نبذة",
       "language": "اللغة",
       "region": "المنطقة",
       "preferredTeam": "الفريق المفضل",
-      "darkPanels": "استخدام لوحات داكنة",
+      "useDarkPanels": "استخدام لوحات داكنة",
       "publicProfile": "ملف عام",
-      "showOnline": "إظهار حالة الاتصال",
-      "allowInvites": "السماح بدعوات اللوبي",
-      "emailUpdates": "تحديثات بالبريد",
-      "gameAlerts": "تنبيهات اللعبة",
-      "gamesPlayed": "عدد الألعاب",
-      "timesWon": "مرات الفوز",
-      "timesLost": "مرات الخسارة",
-      "ratio": "نسبة فوز/خسارة",
-      "mostTeammate": "أكثر زميل لعب"
+      "showOnlineStatus": "إظهار حالة الاتصال",
+      "allowLobbyInvites": "السماح بدعوات اللوبي",
+      "emailUpdates": "تحديثات البريد",
+      "gameAlerts": "تنبيهات اللعبة"
     },
     "placeholders": {
       "yourName": "اسمك",
       "nickname": "لقب",
-      "avatar": "https://…",
+      "avatarUrl": "https://...",
       "bio": "نبذة قصيرة"
     },
-    "buttons": {
-      "changePassword": "تغيير كلمة المرور",
-      "manage2fa": "إدارة 2FA",
-      "activeSession": "الجلسة الحالية",
-      "save": "حفظ التغييرات",
-      "saving": "جاري الحفظ…",
-      "export": "تصدير البيانات",
-      "delete": "حذف الحساب"
+    "options": {
+      "language": {
+        "arabic": "العربية",
+        "english": "English"
+      },
+      "region": {
+        "middleEast": "الشرق الأوسط",
+        "europe": "أوروبا",
+        "northAmerica": "أمريكا الشمالية"
+      },
+      "team": {
+        "blue": "أزرق",
+        "red": "أحمر",
+        "auto": "تلقائي"
+      }
     },
-    "statsText": {
-      "noTeammate": "لا توجد بيانات بعد"
+    "stats": {
+      "gamesPlayed": "عدد الألعاب",
+      "timesWon": "مرات الفوز",
+      "timesLost": "مرات الخسارة",
+      "winLossRatio": "نسبة فوز/خسارة",
+      "mostTeammate": "أكثر زميل لعب",
+      "games": "لعبة",
+      "noTeammate": "لا توجد بيانات زملاء بعد"
+    },
+    "actions": {
+      "backToLobby": "العودة إلى اللوبي",
+      "returnToGame": "العودة إلى اللعبة",
+      "changePassword": "تغيير كلمة المرور",
+      "manage2fa": "إدارة التحقق الثنائي",
+      "activeSession": "الجلسة النشطة",
+      "saving": "جاري الحفظ...",
+      "saveChanges": "حفظ التغييرات",
+      "exportData": "تصدير البيانات",
+      "deleteAccount": "حذف الحساب"
+    },
+    "notice": {
+      "saved": "تم الحفظ",
+      "twoFaPending": "التحقق الثنائي يحتاج إعداد MFA في Supabase. يمكن إضافته لاحقًا عبر واجهات التسجيل.",
+      "deletePending": "حذف الحساب يحتاج إجراء من جهة الخادم (حذف مستخدم Supabase). إذا رغبت، نضيف RPC أو Edge Function لاحقًا."
+    },
+    "password": {
+      "newPrompt": "كلمة المرور الجديدة:",
+      "repeatPrompt": "أعد إدخال كلمة المرور الجديدة:",
+      "mismatch": "كلمتا المرور غير متطابقتين",
+      "tooShort": "يجب أن تكون كلمة المرور 8 أحرف على الأقل",
+      "updated": "تم تحديث كلمة المرور"
+    },
+    "session": {
+      "none": "لا توجد جلسة نشطة",
+      "unknown": "غير معروف",
+      "active": "مسجل الدخول باسم: {{email}} | ينتهي في: {{exp}}"
+    },
+    "errors": {
+      "load": "فشل تحميل الملف الشخصي",
+      "save": "فشل حفظ الملف الشخصي",
+      "changePassword": "فشل تغيير كلمة المرور",
+      "readSession": "فشل قراءة الجلسة"
+    }
+  },
+  "game": {
+    "loading": "جاري التحميل...",
+    "error": "خطأ",
+    "symbol": {
+      "none": "-"
+    },
+    "team": {
+      "red": "أحمر",
+      "blue": "أزرق",
+      "none": "-",
+      "redTeam": "الفريق الأحمر",
+      "blueTeam": "الفريق الأزرق",
+      "noPlayers": "لا يوجد لاعبون"
+    },
+    "role": {
+      "spymaster": "قائد",
+      "operative": "خلية"
+    },
+    "turn": {
+      "gameFinished": "انتهت اللعبة",
+      "redTeamTurn": "دور الفريق الأحمر",
+      "blueTeamTurn": "دور الفريق الأزرق",
+      "waiting": "بانتظار الدور",
+      "yourTurn": "دورك"
+    },
+    "counters": {
+      "blueRemaining": "المتبقي للأزرق",
+      "redRemaining": "المتبقي للأحمر",
+      "guessesTimer": "التخمينات / المؤقت"
+    },
+    "nav": {
+      "home": "الرئيسية",
+      "profile": "الملف الشخصي",
+      "copyLobbyCode": "نسخ كود اللوبي",
+      "backToLobby": "العودة إلى اللوبي",
+      "helpRules": "المساعدة / القوانين",
+      "exitGame": "الخروج من اللعبة"
+    },
+    "header": {
+      "clue": "التلميح",
+      "you": "أنت",
+      "streak": "السلسلة",
+      "winner": "الفائز",
+      "keyAutoVisible": "المفتاح: ظاهر تلقائيًا"
+    },
+    "member": {
+      "player": "لاعب",
+      "youName": "أنت ({{name}})"
+    },
+    "hints": {
+      "trail": "سجل التلميحات",
+      "noRevealsYet": "لا توجد كشفات بعد"
+    },
+    "inputs": {
+      "clueWord": "كلمة التلميح"
+    },
+    "actions": {
+      "setClue": "تثبيت التلميح",
+      "endTurn": "إنهاء الدور",
+      "restart": "إعادة تشغيل",
+      "close": "إغلاق"
+    },
+    "busy": {
+      "settingClue": "جارٍ تثبيت التلميح...",
+      "endingTurn": "جارٍ إنهاء الدور...",
+      "leaving": "جارٍ المغادرة...",
+      "restarting": "جارٍ إعادة التشغيل...",
+      "usingDice": "جارٍ استخدام النرد...",
+      "usingHelper": "جارٍ استخدام المساعدة..."
+    },
+    "notice": {
+      "teamTurn": "دور الفريق ال{{team}}",
+      "clueSet": "التلميح: {{clue}} ({{number}})",
+      "teamWins": "فاز الفريق ال{{team}}",
+      "gameFinished": "انتهت اللعبة",
+      "gameAbandoned": "تم التخلي عن اللعبة",
+      "loadLobbyCodeFailed": "تعذر تحميل كود اللوبي.",
+      "lobbyCodeCopied": "تم نسخ كود اللوبي: {{code}}",
+      "copyFailed": "فشل النسخ.",
+      "invalidPosition": "موقع غير صالح.",
+      "invalidPositions": "مواقع غير صالحة.",
+      "diceUsed": "تم استخدام النرد.",
+      "diceRoll": "النرد: {{option}}",
+      "peek": "كشف: {{color}}",
+      "timeCutApplied": "تم تطبيق تقليص الوقت على {{team}} (نصف)",
+      "shuffleDone": "تم خلط البطاقات غير المكشوفة"
+    },
+    "confirm": {
+      "exitGame": "الخروج من هذه اللعبة والعودة للرئيسية؟"
+    },
+    "prompt": {
+      "targetPos": "أدخل الموقع الهدف (0-24):",
+      "swapPosA": "أدخل pos_a (غير مكشوف من فريقك) 0-24:",
+      "swapPosB": "أدخل pos_b (أي بطاقة غير مكشوفة) 0-24:"
+    },
+    "dice": {
+      "title": "النرد",
+      "usedTurn": "مستخدم هذا الدور",
+      "ready": "جاهز",
+      "streakProgress": "السلسلة {{streak}}/3",
+      "roll": "رمي النرد",
+      "lastRoll": "آخر رمية: {{option}}",
+      "rollHint": "ارمِ للحصول على قدرة نرد عشوائية.",
+      "doubleHint": "تلميح مضاعف",
+      "sabotageReassign": "إعادة توزيع تخريبي",
+      "stealReassign": "إعادة توزيع بالسرقة",
+      "shield": "درع",
+      "cancel": "إلغاء",
+      "swap": "تبديل"
+    },
+    "helper": {
+      "title": "قدرات المساعدة",
+      "oncePerGame": "مرة واحدة لكل لعبة",
+      "timeCut": "تقليص الوقت",
+      "randomPeek": "كشف عشوائي",
+      "cardShuffle": "خلط البطاقات"
+    },
+    "peek": "كشف",
+    "win": {
+      "startNewLobby": "ابدأ لوبي جديد",
+      "waitingOwner": "بانتظار المالك لبدء لوبي جديد",
+      "readHintTrail": "عرض سجل التلميحات",
+      "hideHintTrail": "إخفاء سجل التلميحات",
+      "redTrail": "سجل الأحمر",
+      "blueTrail": "سجل الأزرق"
+    },
+    "rules": {
+      "title": "المساعدة / القوانين",
+      "items": {
+        "1": "يعطي القائد تلميحًا من كلمة واحدة ورقمًا في كل دور.",
+        "2": "يكشف العملاء البطاقات ويمكنهم المتابعة عند التخمين الصحيح.",
+        "3": "اكشف كل بطاقات فريقك أولًا للفوز.",
+        "4": "كشف القاتل ينهي اللعبة ضد فريقك.",
+        "5": "يفتح النرد بعد سلسلة ثلاث كشفات صحيحة.",
+        "6": "قدرات المساعدة تستخدم مرة واحدة لكل لعبة لكل فريق."
+      }
     }
   }
 }

@@ -38,6 +38,8 @@ export default function HomePage({
   onContinueAsGuest,
   onLogout
 }: HomePageProps) {
+  const { t } = useTranslation()
+
   const [lobbyCode, setLobbyCode] = useState<string>('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -46,40 +48,40 @@ export default function HomePage({
     <div className="homeScene">
       <div className="homeFrame">
         <div className="homeHeader">
-          <div className="homeEyebrow">Classic 5x5 Social Deduction</div>
-          <h1 className="homeTitle">OneClue Lobby Hub</h1>
-          <p className="homeSubtitle">Run private matches, jump into quick games, or spectate friends live.</p>
+          <div className="homeEyebrow">{t('home.subtitle')}</div>
+          <h1 className="homeTitle">{t('home.title')}</h1>
+          <p className="homeSubtitle">{t('home.desc')}</p>
           <div className="homeHeroChips">
-            <span className="homeHeroChip">25 Card Grid</span>
-            <span className="homeHeroChip">Team Strategy</span>
-            <span className="homeHeroChip">Live Lobby Sync</span>
+            <span className="homeHeroChip">{t('home.badges.grid')}</span>
+            <span className="homeHeroChip">{t('home.badges.strategy')}</span>
+            <span className="homeHeroChip">{t('home.badges.sync')}</span>
           </div>
         </div>
 
         <div className="homeTopCards">
           <section className="homeCard homeCardFeature" aria-label="Account">
-            <h2>Account</h2>
+            <h2>{t('home.account.title')}</h2>
             {!isAnonymousUser ? (
               <>
                 <p>
-                  Signed in as <b>{authEmail || 'account user'}</b>
+                  {t('home.account.signedInAs', { email: authEmail || 'account user' })}
                 </p>
                 <div className="homeBtnStack">
                   <button className="homeBtnGhost" type="button" onClick={onLogout} disabled={authBusy}>
-                    Logout
+                    {t('home.account.logout')}
                   </button>
                 </div>
               </>
             ) : (
               <>
-                <p>Play as guest or sign in with email/password to keep long-term stats.</p>
+                <p>{t('home.account.guestOrSignIn')}.</p>
                 <div className="homeJoinRow">
                   <input
                     className="homeInput"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="EMAIL"
+                    placeholder={t('home.account.emailPh')}
                     aria-label="Email"
                   />
                 </div>
@@ -89,7 +91,7 @@ export default function HomePage({
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="PASSWORD"
+                    placeholder={t('home.account.passwordPh')}
                     aria-label="Password"
                   />
                 </div>
@@ -100,7 +102,7 @@ export default function HomePage({
                     onClick={() => onSignIn?.(email, password)}
                     disabled={authBusy || !email.trim() || !password.trim()}
                   >
-                    Login
+                     {t('home.account.login')}
                   </button>
                   <button
                     className="homeBtnGhost"
@@ -108,10 +110,10 @@ export default function HomePage({
                     onClick={() => onCreateAccount?.(email, password)}
                     disabled={authBusy || !email.trim() || !password.trim()}
                   >
-                    Create Account
+                    {t('home.account.createAccount')}
                   </button>
                   <button className="homeBtnGhost" type="button" onClick={onContinueAsGuest} disabled={authBusy}>
-                    Continue as Guest
+                    {t('home.account.continueGuest')}
                   </button>
                 </div>
               </>
@@ -120,16 +122,16 @@ export default function HomePage({
 
           {lastLobbyCode && onRejoinLast && onForgetLast && (
             <section className="homeCard homeCardFeature" aria-label="Last lobby">
-              <h2>Last Lobby</h2>
+              <h2>{t('home.lastLobby.title')}</h2>
               <p>
-                Code: <b>{lastLobbyCode}</b>
+                {t('home.lastLobby.code', { code: lastLobbyCode })}
               </p>
               <div className="homeBtnStack">
                 <button className="homeBtnPrimary" type="button" onClick={onRejoinLast}>
-                  Rejoin
+                  {t('home.lastLobby.rejoin')}
                 </button>
                 <button className="homeBtnGhost" type="button" onClick={onForgetLast}>
-                  Forget
+                  {t('home.lastLobby.forget')}
                 </button>
               </div>
             </section>
@@ -138,15 +140,15 @@ export default function HomePage({
 
         <div className="homeGrid">
           <section className="homeCard homeCardJoin" aria-label="Join lobby">
-            <h2>Join Lobby</h2>
-            <p>Enter a lobby code to join your team instantly.</p>
+            <h2>{t('home.join.title')}</h2>
+            <p>{t('home.join.desc')}.</p>
             <div className="homeJoinRow">
               <input
                 className="homeInput"
                 type="text"
                 value={lobbyCode}
                 onChange={(e) => setLobbyCode(e.target.value.toUpperCase())}
-                placeholder="ROOM CODE"
+                placeholder={t('home.join.roomCodePh')}
                 aria-label="Lobby code"
               />
               <button
@@ -155,7 +157,7 @@ export default function HomePage({
                 onClick={() => onJoinLobby(lobbyCode.trim())}
                 disabled={!lobbyCode.trim()}
               >
-                Join
+                {t('home.join.joinBtn')}
               </button>
             </div>
 
@@ -166,36 +168,36 @@ export default function HomePage({
                 onClick={() => onSpectateLobby(lobbyCode.trim())}
                 disabled={!lobbyCode.trim()}
               >
-                Spectate Lobby
+                {t('home.join.spectateBtn')}
               </button>
             </div>
           </section>
 
           <section className="homeCard homeCardCreate" aria-label="Create lobby">
-            <h2>Create Lobby</h2>
-            <p>Create a new room and invite players with a code.</p>
+            <h2>{t('home.create.title')}</h2>
+            <p>{t('home.create.desc')}.</p>
             <div className="homeBtnStack">
               <button className="homeBtnPrimary" type="button" onClick={() => onCreateLobby('classic')}>
-                Create Classic Lobby
+               {t('home.create.classic')}
               </button>
               <button className="homeBtnGhost" type="button" onClick={() => onCreateLobby('powers')}>
-                Create Powers Lobby
+               {t('home.create.powers')}
               </button>
             </div>
           </section>
 
           <section className="homeCard homeCardQuick" aria-label="Other options">
-            <h2>Other Options</h2>
-            <p>Quick actions for players who want to jump in fast.</p>
+            <h2> {t('home.other.title')}</h2>
+            <p>{t('home.other.desc')}.</p>
             <div className="homeBtnStack">
               <button className="homeBtnGhost" type="button" onClick={onQuickMatch}>
-                Quick Match
+               {t('home.other.quickMatch')}
               </button>
               <button className="homeBtnGhost" type="button" onClick={onOpenSettings}>
-                Open Settings
+                {t('home.other.openSettings')}
               </button>
               <button className="homeBtnGhost" type="button" onClick={onOpenProfile}>
-                Profile
+                {t('home.other.profile')}
               </button>
             </div>
           </section>

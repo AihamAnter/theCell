@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import HomePage from '../components/HomePage'
 import { supabase } from '../lib/supabaseClient'
 import { createLobby, joinLobby, joinLobbyAsSpectator, quickMatch } from '../lib/lobbies'
@@ -63,7 +64,7 @@ function lobbyUrl(code: string, role: string | null): string {
 
 export default function HomeRoute() {
   const navigate = useNavigate()
-
+const { t } = useTranslation()
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
 
@@ -141,7 +142,7 @@ export default function HomeRoute() {
   async function handleCreate(mode: 'classic' | 'powers') {
     if (uiDisabled) return
     try {
-      setBusy(mode === 'powers' ? 'Creating powers lobby…' : 'Creating lobby…')
+      setBusy(t('home.busy.creatingPowersLobby'))
       const { lobbyCode } = await createLobby({ settings: { mode } })
 
       writeStr('oneclue_last_lobby_code', lobbyCode)
@@ -165,7 +166,7 @@ export default function HomeRoute() {
     if (!clean) return
 
     try {
-      setBusy('Joining lobby…')
+      setBusy(t('home.busy.joiningLobby'))
       await joinLobby(clean)
 
       writeStr('oneclue_last_lobby_code', clean)
@@ -189,7 +190,7 @@ export default function HomeRoute() {
     if (!clean) return
 
     try {
-      setBusy('Joining as spectator…')
+      setBusy(t('home.busy.joiningSpectator'))
       await joinLobbyAsSpectator(clean)
 
       writeStr('oneclue_last_lobby_code', clean)
@@ -210,7 +211,7 @@ export default function HomeRoute() {
   async function handleQuickMatch() {
     if (uiDisabled) return
     try {
-      setBusy('Finding a match…')
+      setBusy(t('home.busy.findingMatch'))
       const res = await quickMatch({ mode: 'classic' })
 
       writeStr('oneclue_last_lobby_code', res.lobbyCode)
@@ -232,14 +233,15 @@ export default function HomeRoute() {
     clearKey('oneclue_last_lobby_role')
     setLastLobbyCode('')
     setLastLobbyRole('')
-    addToast('Forgot last lobby.', 'success')
+    addToast(t('home.toasts.forgotLast'), 'success')
 
   }
 
   function openSettings() {
     const code = (lastLobbyCode ?? '').trim()
     if (!code) {
-      addToast('No recent lobby found. Join a lobby first.', 'info')
+      addToast(t('home.toasts.noRecentLobby'), 'info')
+
 
       return
     }
@@ -249,10 +251,10 @@ export default function HomeRoute() {
   async function handleSignIn(email: string, password: string) {
     if (uiDisabled) return
     try {
-      setBusy('Signing in...')
+      setBusy(t('home.busy.signingIn'))
       await signInWithEmailPassword(email, password)
       await refreshAuthSummary()
-      addToast('Signed in.', 'success')
+      addToast(t('home.toasts.signedIn'), 'success')
     } catch (err) {
       console.error('[home] sign in failed:', err)
       addToast(err instanceof Error ? err.message : supaErr(err), 'error')
@@ -264,11 +266,11 @@ export default function HomeRoute() {
   async function handleCreateAccount(email: string, password: string) {
     if (uiDisabled) return
     try {
-      setBusy('Creating account...')
+      setBusy(t('home.busy.creatingLobby'))
       const res = await upgradeAnonymousWithEmailPassword(email, password)
       await refreshAuthSummary()
-      if (res.mode === 'upgrade') addToast('Guest account upgraded.', 'success')
-      else addToast('Account created. Check email if confirmation is enabled.', 'success')
+      if (res.mode === 'upgrade') addToast(t('home.toasts.guestUpgraded'), 'success')
+      else addToast(t('home.toasts.accountCreated'), 'success')
     } catch (err) {
       console.error('[home] create account failed:', err)
       addToast(err instanceof Error ? err.message : supaErr(err), 'error')
@@ -280,11 +282,11 @@ export default function HomeRoute() {
   async function handleLogout() {
     if (uiDisabled) return
     try {
-      setBusy('Logging out...')
+      setBusy(t('home.busy.loggingOut'))
       await signOut()
       await ensureSession()
       await refreshAuthSummary()
-      addToast('Now playing as guest.', 'info')
+      addToast(t('home.toasts.nowGuest'), 'info')
     } catch (err) {
       console.error('[home] logout failed:', err)
       addToast(err instanceof Error ? err.message : supaErr(err), 'error')
@@ -298,9 +300,9 @@ export default function HomeRoute() {
       <div className="homeScene">
         <div className="homeFrame">
           <div className="homeHeader">
-            <div className="homeEyebrow">Classic 5x5</div>
-            <h1 className="homeTitle">OneClue</h1>
-            <p className="homeSubtitle">Loading…</p>
+            <div className="homeEyebrow">{t('home.screens.loadingKicker')}</div>
+            <h1 className="homeTitle">{t('home.screens.loadingTitle')}</h1>
+            <p className="homeSubtitle">{t('home.screens.loading')}</p>
           </div>
         </div>
       </div>
@@ -312,17 +314,17 @@ export default function HomeRoute() {
       <div className="homeScene">
         <div className="homeFrame">
           <div className="homeHeader">
-            <div className="homeEyebrow">Classic 5x5</div>
-            <h1 className="homeTitle">OneClue</h1>
-            <p className="homeSubtitle">Could not start the app.</p>
+            <div className="homeEyebrow">{t('home.screens.loadingKicker')}</div>
+            <h1 className="homeTitle">{t('home.screens.loadingTitle')}</h1>
+            <p className="homeSubtitle">{t('home.screens.couldNotStart')}.</p>
           </div>
 
           <section className="homeCard" aria-label="Error">
-            <h2>Error</h2>
+            <h2>{t('home.screens.errorTitle')}</h2>
             <p style={{ minHeight: 0 }}>{error ?? 'Unknown error'}</p>
             <div className="homeBtnStack">
               <button className="homeBtnPrimary" type="button" onClick={() => window.location.reload()}>
-                Reload
+                {t('home.screens.reload')}
               </button>
             </div>
           </section>
@@ -386,7 +388,7 @@ export default function HomeRoute() {
         authBusy={Boolean(busy)}
         onSignIn={handleSignIn}
         onCreateAccount={handleCreateAccount}
-        onContinueAsGuest={() => addToast('Continuing as guest.', 'info')}
+        onContinueAsGuest={() => addToast(t('home.toasts.continueGuest'), 'info')}
         onLogout={handleLogout}
       />
 

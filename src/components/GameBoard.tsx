@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { CardColor, GameCard } from '../lib/games'
 import type { GameViewActions, GameViewState, LobbyMemberView, Team } from '../lib/gameView'
 
@@ -89,6 +89,13 @@ function isOnline(lastSeen: string | null | undefined): boolean {
 function statusPill(lastSeen: string | null | undefined): { text: string; bg: string } {
   if (isOnline(lastSeen)) return { text: 'online', bg: 'rgba(40,190,120,0.16)' }
   return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
+}
+
+function formatClock(totalSeconds: number): string {
+  const safe = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0
+  const mins = Math.floor(safe / 60)
+  const secs = safe % 60
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 }
 
 export default function GameBoard(props: Props) {
@@ -190,28 +197,23 @@ export default function GameBoard(props: Props) {
     return displayNameFor(state.members[myMemberIndex], myMemberIndex)
   }, [me, myMemberIndex, state.members])
 
-  const turnPill = useMemo(() => {
-    const isRed = turnTeam === 'red'
-    const isBlue = turnTeam === 'blue'
+  const redFound = useMemo(() => state.cards.filter((c) => c.revealed && c.revealed_color === 'red').length, [state.cards])
+  const blueFound = useMemo(() => state.cards.filter((c) => c.revealed && c.revealed_color === 'blue').length, [state.cards])
+  const revealedCount = useMemo(() => state.cards.filter((c) => c.revealed).length, [state.cards])
+  const totalCards = state.cards.length
+  const [nowMs, setNowMs] = useState<number>(() => Date.now())
 
-    return (
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '4px 10px',
-          borderRadius: 999,
-          border: '1px solid rgba(255,255,255,0.12)',
-          background: isRed ? 'rgba(255,60,60,0.18)' : isBlue ? 'rgba(80,140,255,0.18)' : 'rgba(255,255,255,0.06)'
-        }}
-      >
-        <span style={{ opacity: 0.85 }}>Turn</span>
-        <b>{teamLabel(turnTeam)}</b>
-        <span style={{ opacity: 0.85 }}>{isMyTurn ? '(you)' : ''}</span>
-      </span>
-    )
-  }, [turnTeam, isMyTurn])
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const turnTimer = useMemo(() => {
+    const started = game?.turn_started_at ? Date.parse(game.turn_started_at) : NaN
+    if (!Number.isFinite(started)) return '00:00'
+    const elapsed = (nowMs - started) / 1000
+    return formatClock(elapsed)
+  }, [game?.turn_started_at, nowMs])
 
   const blockReason = useMemo(() => {
     if (!isActive) return null
@@ -380,6 +382,30 @@ async function doReveal(card: GameCard) {
     }
   }
 
+  const navButtonStyle: CSSProperties = {
+    padding: '6px 10px',
+    borderRadius: 999,
+    border: '1px solid rgba(255,255,255,0.14)',
+    background: 'rgba(255,255,255,0.05)',
+    color: 'rgba(245,248,255,0.9)',
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1,
+    cursor: 'pointer'
+  }
+
+  const navChipStyle: CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 8px',
+    borderRadius: 999,
+    border: '1px solid rgba(255,255,255,0.10)',
+    background: 'rgba(255,255,255,0.03)',
+    fontSize: 12,
+    color: 'rgba(245,248,255,0.78)'
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: '#0b0b0f', color: '#fff', padding: 16, position: 'relative' }}>
       {/* Toast stack */}
@@ -490,35 +516,163 @@ async function doReveal(card: GameCard) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={onBackToLobby}>Lobby</button>
-        <button onClick={onBackToHome}>Classic</button>
-        <button onClick={onOpenSettings} disabled={!state.lobbyCode}>
-          Settings
-        </button>
-        <button onClick={onOpenProfile}>Profile</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'inline-flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            padding: 5,
+            borderRadius: 999,
+            border: '1px solid rgba(255,255,255,0.09)',
+            background: 'rgba(255,255,255,0.02)'
+          }}
+        >
+          <button type="button" onClick={onBackToLobby} style={navButtonStyle}>Lobby</button>
+          <button type="button" onClick={onBackToHome} style={navButtonStyle}>Classic</button>
+          <button type="button" onClick={onOpenSettings} disabled={!state.lobbyCode} style={navButtonStyle}>Settings</button>
+          <button type="button" onClick={onOpenProfile} style={navButtonStyle}>Profile</button>
+        </div>
 
-        {me?.isSpymaster && (
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 8, opacity: 0.95 }}>
-            <input type="checkbox" checked={state.showKey} onChange={(e) => actions.setShowKey(e.target.checked)} />
-            <span>Key</span>
+        <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {me?.isSpymaster && (
+            <label style={navChipStyle}>
+              <input type="checkbox" checked={state.showKey} onChange={(e) => actions.setShowKey(e.target.checked)} />
+              <span>Key</span>
+            </label>
+          )}
+
+          <label style={navChipStyle}>
+            <input type="checkbox" checked={confirmReveal} onChange={(e) => setConfirmReveal(e.target.checked)} />
+            <span>Confirm reveal</span>
           </label>
-        )}
 
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 8, opacity: 0.95 }}>
-          <input type="checkbox" checked={confirmReveal} onChange={(e) => setConfirmReveal(e.target.checked)} />
-          <span>Confirm reveal</span>
-        </label>
-
-        <div style={{ opacity: 0.8, fontSize: 12, marginLeft: 8 }}>{realtimeBadge}</div>
-
-        <button onClick={() => actions.refresh()} style={{ marginLeft: 'auto' }}>
-          Refresh
-        </button>
+          <div style={{ ...navChipStyle, opacity: 0.85 }}>{realtimeBadge}</div>
+          <button type="button" onClick={() => actions.refresh()} style={navButtonStyle}>Refresh</button>
+        </div>
       </div>
 
       <div style={{ padding: 12, border: '1px solid #2a2a35', borderRadius: 12, background: '#111118' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div
+          style={{
+            position: 'relative',
+            overflow: 'hidden',
+            borderRadius: 14,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background:
+              'radial-gradient(120% 100% at 50% 0%, rgba(45,70,130,0.42), rgba(8,10,18,0.92) 56%), linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.01))',
+            padding: '14px 12px'
+          }}
+        >
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              background:
+                'linear-gradient(63deg, transparent 40%, rgba(60,120,255,0.30) 50%, transparent 60%), linear-gradient(-63deg, transparent 40%, rgba(60,120,255,0.26) 50%, transparent 60%)'
+            }}
+          />
+          <div
+            style={{
+              position: 'relative',
+              display: 'grid',
+              gridTemplateColumns: 'minmax(54px, 84px) minmax(150px, 1fr) minmax(54px, 84px)',
+              gap: 8,
+              alignItems: 'center'
+            }}
+          >
+            <div
+              style={{
+                justifySelf: 'start',
+                minWidth: 54,
+                textAlign: 'center',
+                padding: '9px 10px',
+                borderRadius: 10,
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02))',
+                fontWeight: 900,
+                fontSize: 30,
+                lineHeight: 1,
+                color: '#e8ecff'
+              }}
+            >
+              {redFound}
+            </div>
+
+            <div
+              style={{
+                justifySelf: 'center',
+                width: '100%',
+                maxWidth: 300,
+                padding: '8px 8px 7px',
+                borderRadius: 12,
+                border: '1px solid rgba(255,255,255,0.14)',
+                background: 'linear-gradient(180deg, rgba(220,230,255,0.16), rgba(40,48,72,0.45))',
+                boxShadow: '0 10px 28px rgba(0,0,0,0.35)'
+              }}
+            >
+              <div style={{ textAlign: 'center', fontWeight: 900, fontSize: 24, letterSpacing: 0.2, lineHeight: 1.05, color: '#f5f8ff' }}>
+                {revealedCount} out of {totalCards || 25}
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'center', gap: 6 }}>
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '4px 8px',
+                    borderRadius: 9,
+                    border: '1px solid rgba(255,255,255,0.16)',
+                    background: 'rgba(15,20,34,0.86)',
+                    fontSize: 12,
+                    fontWeight: 900
+                  }}
+                >
+                  <span style={{ width: 7, height: 7, borderRadius: 999, background: turnTeam === 'red' ? '#ff5a5a' : turnTeam === 'blue' ? '#70a1ff' : '#94a3b8' }} />
+                  <span>{teamLabel(turnTeam)}</span>
+                </div>
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '4px 10px',
+                    borderRadius: 9,
+                    border: '1px solid rgba(240,184,66,0.58)',
+                    background: 'linear-gradient(180deg, rgba(45,38,15,0.92), rgba(23,18,8,0.92))',
+                    color: '#f5cb4b',
+                    fontSize: 16,
+                    fontWeight: 900
+                  }}
+                >
+                  {turnTimer}
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                justifySelf: 'end',
+                minWidth: 54,
+                textAlign: 'center',
+                padding: '9px 10px',
+                borderRadius: 10,
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02))',
+                fontWeight: 900,
+                fontSize: 30,
+                lineHeight: 1,
+                color: '#e8ecff'
+              }}
+            >
+              {blueFound}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
           <div style={{ opacity: 0.9 }}>
             You: <b>{myDisplayName}</b> • team <b>{teamLabel(myTeam)}</b> • role <b>{me?.isSpymaster ? 'spymaster' : 'operative'}</b>
           </div>

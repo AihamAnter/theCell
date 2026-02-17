@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient'
-
+import i18n from '../i18n' 
 export type Game = {
   id: string
   lobby_id: string
@@ -64,10 +64,9 @@ function formatRpcError(context: string, err: unknown): Error {
 
 export async function startGame(lobbyId: string): Promise<string> {
   const { data, error } = await supabase.rpc('start_game', {
-    p_lobby_id: lobbyId,
-    p_words: null,
-    p_language: 'en'
-  })
+  p_lobby_id: lobbyId,
+  p_language: i18n.language === 'ar' ? 'ar' : 'en'
+})
 
   if (error) throw formatRpcError('[start_game]', error)
   if (typeof data !== 'string') throw new Error('[start_game] returned invalid data')

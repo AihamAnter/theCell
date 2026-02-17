@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { supabase } from '../lib/supabaseClient'
 import {
   loadGame,
@@ -34,6 +35,7 @@ type CenterNoticeTone = 'info' | 'turn' | 'win'
 type HintGuess = { word: string; correct: boolean }
 type HintTrack = { id: string; clue: string; number: number; words: HintGuess[] }
 type ProfileView = { displayName: string; avatarUrl: string }
+type RevealMark = { pos: number; byUserId: string | null; at: number }
 
 function supaErr(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
@@ -72,12 +74,6 @@ function formatMMSS(totalSeconds: number): string {
 function displayNameOrFallback(name: string | undefined, fallback: string): string {
   const clean = String(name ?? '').trim()
   return clean || fallback
-}
-
-function teamLabel(t: 'red' | 'blue' | null): string {
-  if (t === 'red') return 'Red'
-  if (t === 'blue') return 'Blue'
-  return '—'
 }
 
 function clearLastLobbyMemory() {
@@ -147,8 +143,19 @@ function timeCutHalfAppliesNow(state: any, currentTurnTeam: 'red' | 'blue' | nul
 export default function GameRoute() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   const gameId = useMemo(() => (id ?? '').trim(), [id])
+
+  function teamLabelText(team: 'red' | 'blue' | null): string {
+    if (team === 'red') return t('game.team.red')
+    if (team === 'blue') return t('game.team.blue')
+    return t('game.team.none')
+  }
+
+  function roleLabel(isSpy: boolean): string {
+    return isSpy ? t('game.role.spymaster') : t('game.role.operative')
+  }
 
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
@@ -166,6 +173,10 @@ export default function GameRoute() {
 
   const [clueWord, setClueWord] = useState('')
   const [clueNumber, setClueNumber] = useState(1)
+  const [isEditingClue, setIsEditingClue] = useState(false)
+  const isEditingClueRef = useRef(false)
+  const clueWordInputRef = useRef<HTMLInputElement | null>(null)
+  const clueNumberInputRef = useRef<HTMLInputElement | null>(null)
 
   const [keyRows, setKeyRows] = useState<SpymasterKeyRow[]>([])
   const keyMap = useMemo(() => {
@@ -231,6 +242,8 @@ useEffect(() => {
   const [showWinTrail, setShowWinTrail] = useState(false)
   const [lobbyCode, setLobbyCode] = useState<string>('')
   const [showRules, setShowRules] = useState(false)
+  const [revealMarks, setRevealMarks] = useState<Record<number, RevealMark>>({})
+  const channelRef = useRef<any>(null)
   const prevRevealedRef = useRef<Map<number, boolean>>(new Map())
   const fxTimeoutsRef = useRef<number[]>([])
   const suspenseTimeoutRef = useRef<number | null>(null)
@@ -273,6 +286,25 @@ function computeTurnLeftFromGame(g: Game | null): number {
 
 const [turnLeft, setTurnLeft] = useState<number>(TURN_SECONDS)
 const lastTurnSigRef = useRef<string>('')
+
+useEffect(() => {
+  isEditingClueRef.current = isEditingClue
+}, [isEditingClue])
+
+function syncClueInputsFromGame(g: Game, force = false) {
+  if (!force && isEditingClueRef.current) return
+  setClueWord(g.clue_word ?? '')
+  setClueNumber(g.clue_number ?? 1)
+}
+
+function handleClueInputBlur() {
+  // Keep edit-lock on when focus moves between clue inputs.
+  window.setTimeout(() => {
+    const active = document.activeElement
+    const stillInClueInputs = active === clueWordInputRef.current || active === clueNumberInputRef.current
+    setIsEditingClue(stillInClueInputs)
+  }, 0)
+}
 
 
     async function refreshMembers(lobbyId: string, loadProfiles: boolean) {
@@ -377,8 +409,7 @@ const amOwner = useMemo(() => {
         setCards(c)
         setMyTeam((lm?.team ?? null) as 'red' | 'blue' | null)
         setAmSpymaster(Boolean(lm?.is_spymaster))
-        setClueWord(g.clue_word ?? '')
-        setClueNumber(g.clue_number ?? 1)
+        syncClueInputsFromGame(g, true)
         setState('ready')
       } catch (err) {
         console.error('[game] load failed:', err)
@@ -425,8 +456,7 @@ const amOwner = useMemo(() => {
         if (cancelled) return
         setGame(g)
         setCards(c)
-        setClueWord(g.clue_word ?? '')
-        setClueNumber(g.clue_number ?? 1)
+        syncClueInputsFromGame(g)
       } catch (err) {
         // keep quiet: polling is just a fallback
         console.warn('[game] poll fallback failed:', err)
@@ -455,19 +485,17 @@ const amOwner = useMemo(() => {
     const lobbyId = game.lobby_id
     setRealtimeStatus('CONNECTING')
     const channel = supabase
-      .channel(`lobby:${lobbyId}`)
+      .channel(`lobby:${lobbyId}`, { config: { broadcast: { self: true, ack: true } } })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` }, async () => {
         const g = await loadGame(gameId)
         setGame(g)
-        setClueWord(g.clue_word ?? '')
-        setClueNumber(g.clue_number ?? 1)
+        syncClueInputsFromGame(g)
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'game_cards', filter: `game_id=eq.${gameId}` }, async () => {
         const [c, g] = await Promise.all([loadGameCards(gameId), loadGame(gameId)])
         setCards(c)
         setGame(g)
-        setClueWord(g.clue_word ?? '')
-        setClueNumber(g.clue_number ?? 1)
+        syncClueInputsFromGame(g)
       })
             .on(
         'postgres_changes',
@@ -499,12 +527,32 @@ const amOwner = useMemo(() => {
           await refreshMembers(lobbyId, payload.eventType === 'INSERT' || payload.eventType === 'DELETE')
         }
       )
+      .on('broadcast', { event: 'reveal_mark' }, (payload) => {
+        const data = (payload as any)?.payload as any
+        if (!data || String(data.gameId ?? '') !== gameId) return
+        const action = String(data.action ?? 'set')
+        const pos = Number(data.pos)
+        if (!Number.isFinite(pos) || pos < 0) return
+        if (action === 'clear') {
+          setRevealMarks((prev) => {
+            const out = { ...prev }
+            delete out[pos]
+            return out
+          })
+          return
+        }
+        const byUserId = typeof data.byUserId === 'string' ? data.byUserId : null
+        const at = Number(data.at)
+        setRevealMarks((prev) => ({ ...prev, [pos]: { pos, byUserId, at: Number.isFinite(at) ? at : Date.now() } }))
+      })
 
 
             .subscribe((status) => {
         setRealtimeStatus(status as any)
       })
+    channelRef.current = channel
     return () => {
+      channelRef.current = null
       void supabase.removeChannel(channel)
     }
   }, [gameId, game?.lobby_id, navigate])
@@ -565,7 +613,7 @@ const amOwner = useMemo(() => {
         if (arr.length === 0) {
           const fallback: HintTrack = {
             id: `${actorTeam}-fallback-${Date.now()}`,
-            clue: String(game?.clue_word ?? '—'),
+            clue: String(game?.clue_word ?? t('game.symbol.none')),
             number: Number(game?.clue_number ?? 0),
             words: [{ word: c.word, correct: isCorrect }]
           }
@@ -579,6 +627,53 @@ const amOwner = useMemo(() => {
 
     }
   }, [cards, myTeam, game?.current_turn_team, game?.clue_word, game?.clue_number, memberTeamById])
+
+  async function broadcastRevealMark(action: 'set' | 'clear', pos: number) {
+    const ch = channelRef.current
+    if (!ch) return
+    try {
+      await ch.send({
+        type: 'broadcast',
+        event: 'reveal_mark',
+        payload: {
+          gameId,
+          action,
+          pos,
+          byUserId: myUserId ?? null,
+          at: Date.now()
+        }
+      })
+    } catch {
+      // ignore realtime broadcast errors; local marker still works
+    }
+  }
+
+  function clearRevealMark(pos: number) {
+    setRevealMarks((prev) => {
+      if (!prev[pos]) return prev
+      const out = { ...prev }
+      delete out[pos]
+      return out
+    })
+    void broadcastRevealMark('clear', pos)
+  }
+
+  useEffect(() => {
+    const revealedSet = new Set(cards.filter((c) => c.revealed).map((c) => c.pos))
+    setRevealMarks((prev) => {
+      let changed = false
+      const out: Record<number, RevealMark> = {}
+      for (const [k, mark] of Object.entries(prev)) {
+        const pos = Number(k)
+        if (revealedSet.has(pos)) {
+          changed = true
+          continue
+        }
+        out[pos] = mark
+      }
+      return changed ? out : prev
+    })
+  }, [cards])
 
   
 
@@ -601,7 +696,7 @@ const amOwner = useMemo(() => {
     if (!prev) return
 
     if (prev.current_turn_team !== game.current_turn_team && game.current_turn_team) {
-      showCenterNotice(`${teamLabel(game.current_turn_team)} Team Turn`, 'turn', 1700)
+      showCenterNotice(t('game.notice.teamTurn', { team: teamLabelText(game.current_turn_team) }), 'turn', 1700)
     }
 
     const prevClue = (prev.clue_word ?? '').trim()
@@ -617,23 +712,23 @@ const amOwner = useMemo(() => {
         arr.push({ id: hintId, clue: nextClue, number: Number(game.clue_number ?? 0), words: [] })
         return { ...logs, [team]: arr.slice(-6) }
       })
-      showCenterNotice(`Clue: ${nextClue} (${String(game.clue_number ?? '—')})`, 'info', 2200)
+      showCenterNotice(t('game.notice.clueSet', { clue: nextClue, number: String(game.clue_number ?? t('game.symbol.none')) }), 'info', 2200)
     }
 
     if (prev.status !== game.status) {
       if (game.status === 'finished') {
         if (game.winning_team) {
-          showCenterNotice(`${teamLabel(game.winning_team)} Team Wins`, 'win', 2600)
+          showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(game.winning_team) }), 'win', 2600)
         } else {
-          showCenterNotice('Game Finished', 'win', 2200)
+          showCenterNotice(t('game.notice.gameFinished'), 'win', 2200)
         }
       } else if (game.status === 'abandoned') {
-        showCenterNotice('Game Abandoned', 'info', 2200)
+        showCenterNotice(t('game.notice.gameAbandoned'), 'info', 2200)
       }
     }
 
     if (prev.winning_team !== game.winning_team && game.winning_team) {
-      showCenterNotice(`${teamLabel(game.winning_team)} Team Wins`, 'win', 2600)
+      showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(game.winning_team) }), 'win', 2600)
     }
   }, [game])
 
@@ -699,7 +794,7 @@ const amOwner = useMemo(() => {
     }
     if (prevForcedWinnerRef.current === winner) return
     prevForcedWinnerRef.current = winner
-    showCenterNotice(`${teamLabel(winner)} Team Wins`, 'win', 2600)
+    showCenterNotice(t('game.notice.teamWins', { team: teamLabelText(winner) }), 'win', 2600)
   }, [game])
 
   useEffect(() => {
@@ -809,8 +904,7 @@ useEffect(() => {
         // pull fresh game state so UI flips immediately even if realtime misses it
         const g2 = await loadGame(gameId)
         setGame(g2)
-        setClueWord(g2.clue_word ?? '')
-        setClueNumber(g2.clue_number ?? 1)
+        syncClueInputsFromGame(g2)
       } catch (err) {
         console.warn('[game] guesses auto end_turn failed:', err)
         showCenterNotice(supaErr(err), 'info', 2600)
@@ -828,7 +922,17 @@ async function handleReveal(pos: number) {
     if (pillCount <= 0) return
     if (pendingRevealPos !== null || busy !== null) return
 
+    const mark = revealMarks[pos]
+    const markedByMe = Boolean(mark && mark.byUserId && myUserId && mark.byUserId === myUserId)
+    if (!markedByMe) {
+      setRevealMarks((prev) => ({ ...prev, [pos]: { pos, byUserId: myUserId ?? null, at: Date.now() } }))
+      void broadcastRevealMark('set', pos)
+      showCenterNotice('Card tagged. Click it again to reveal.', 'info', 1300)
+      return
+    }
+
     try {
+      clearRevealMark(pos)
       setPendingRevealPos(pos)
 
       // tiny delay keeps the UI feel responsive (also prevents accidental double taps)
@@ -854,8 +958,7 @@ async function handleReveal(pos: number) {
       // Always trust DB for counters + turn changes (fixes "cards left" inaccuracies).
       const g1 = await loadGame(gameId)
       setGame(g1)
-      setClueWord(g1.clue_word ?? '')
-      setClueNumber(g1.clue_number ?? 1)
+      syncClueInputsFromGame(g1)
 
       // Auto end turn when guesses hit 0 (reliable even if realtime misses updates).
       const wasMyTurn = Boolean(myTeam && game?.current_turn_team === myTeam)
@@ -880,8 +983,7 @@ async function handleReveal(pos: number) {
           try {
             const g2 = await loadGame(gameId)
             setGame(g2)
-            setClueWord(g2.clue_word ?? '')
-            setClueNumber(g2.clue_number ?? 1)
+            syncClueInputsFromGame(g2)
           } catch (err) {
             console.warn('[game] post end_turn reload failed:', err)
           }
@@ -899,7 +1001,8 @@ async function handleReveal(pos: number) {
   async function handleSetClue() {
     if (!gameId) return
     try {
-      setBusy('Setting clue…')
+      setIsEditingClue(false)
+      setBusy(t('game.busy.settingClue'))
       await setClue(gameId, clueWord, clueNumber)
     } catch (err) {
       console.error('[game] set clue failed:', err)
@@ -912,7 +1015,7 @@ async function handleReveal(pos: number) {
   async function handleEndTurn() {
     if (!gameId) return
     try {
-      setBusy('Ending turn…')
+      setBusy(t('game.busy.endingTurn'))
       await endTurn(gameId)
     } catch (err) {
       console.error('[game] end turn failed:', err)
@@ -925,7 +1028,7 @@ async function handleReveal(pos: number) {
   async function handleStopPlaying() {
     if (!game?.lobby_id) return
     try {
-      setBusy('Leaving…')
+      setBusy(t('game.busy.leaving'))
       await stopPlaying(game.lobby_id)
       clearLastLobbyMemory()
       navigate('/', { replace: true })
@@ -949,7 +1052,7 @@ async function handleReveal(pos: number) {
       return code
     } catch (err) {
       console.warn('[game] get lobby code failed:', err)
-      showCenterNotice('Could not load lobby code.', 'info', 2200)
+      showCenterNotice(t('game.notice.loadLobbyCodeFailed'), 'info', 2200)
       return null
     }
   }
@@ -980,10 +1083,10 @@ async function handleReveal(pos: number) {
         document.execCommand('copy')
         document.body.removeChild(ta)
       }
-      showCenterNotice(`Lobby code copied: ${code}`, 'info', 1800)
+      showCenterNotice(t('game.notice.lobbyCodeCopied', { code }), 'info', 1800)
     } catch (err) {
       console.warn('[game] copy lobby code failed:', err)
-      showCenterNotice('Copy failed.', 'info', 2000)
+      showCenterNotice(t('game.notice.copyFailed'), 'info', 2000)
     }
   }
 
@@ -999,7 +1102,7 @@ async function handleReveal(pos: number) {
   }
 
   async function handleExitGame() {
-    const ok = window.confirm('Exit this game completely and return home?')
+    const ok = window.confirm(t('game.confirm.exitGame'))
     if (!ok) return
     await handleStopPlaying()
   }
@@ -1032,7 +1135,7 @@ useEffect(() => {
   async function handleRestart() {
     if (!game?.lobby_id) return
     try {
-      setBusy('Restarting…')
+      setBusy(t('game.busy.restarting'))
       const code = await restartLobby(game.lobby_id)
       navigate(`/settings/${code}`)
     } catch (err) {
@@ -1047,36 +1150,36 @@ useEffect(() => {
     if (!gameId) return
     if (!isGameActive) return
     try {
-      setBusy('Using dice…')
+      setBusy(t('game.busy.usingDice'))
 
       // options needing positions
       if (option === 'sabotage_reassign' || option === 'steal_reassign') {
-        const posStr = window.prompt('Enter the target position (0-24):')
+        const posStr = window.prompt(t('game.prompt.targetPos'))
         if (posStr === null) return
         const pos = Number(posStr)
-        if (!Number.isFinite(pos)) return showCenterNotice('Invalid position.', 'info', 2000)
+        if (!Number.isFinite(pos)) return showCenterNotice(t('game.notice.invalidPosition'), 'info', 2000)
         const res = await useDiceOption(gameId, option, { pos })
         console.log('[dice result]', res)
-        showCenterNotice('Dice used.', 'info', 1600)
+        showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
         return
       }
       if (option === 'swap') {
-        const aStr = window.prompt('Enter pos_a (your team unrevealed) 0-24:')
+        const aStr = window.prompt(t('game.prompt.swapPosA'))
         if (aStr === null) return
-        const bStr = window.prompt('Enter pos_b (any unrevealed) 0-24:')
+        const bStr = window.prompt(t('game.prompt.swapPosB'))
         if (bStr === null) return
         const pos_a = Number(aStr)
         const pos_b = Number(bStr)
-        if (!Number.isFinite(pos_a) || !Number.isFinite(pos_b)) return showCenterNotice('Invalid positions.', 'info', 2000)
+        if (!Number.isFinite(pos_a) || !Number.isFinite(pos_b)) return showCenterNotice(t('game.notice.invalidPositions'), 'info', 2000)
         const res = await useDiceOption(gameId, option, { pos_a, pos_b })
         console.log('[dice result]', res)
-        showCenterNotice('Dice used.', 'info', 1600)
+        showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
         return
       }
       // simple options
       const res = await useDiceOption(gameId, option, {})
       console.log('[dice result]', res)
-      showCenterNotice('Dice used.', 'info', 1600)
+      showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
     } catch (err) {
       console.error('[dice] failed:', err)
       showCenterNotice(supaErr(err), 'info', 2600)
@@ -1085,12 +1188,12 @@ useEffect(() => {
     }
   }
   function diceOptionLabel(option: DiceOption): string {
-    if (option === 'double_hint') return 'Double Hint'
-    if (option === 'sabotage_reassign') return 'Sabotage Reassign'
-    if (option === 'steal_reassign') return 'Steal Reassign'
-    if (option === 'shield') return 'Shield'
-    if (option === 'cancel') return 'Cancel'
-    return 'Swap'
+    if (option === 'double_hint') return t('game.dice.doubleHint')
+    if (option === 'sabotage_reassign') return t('game.dice.sabotageReassign')
+    if (option === 'steal_reassign') return t('game.dice.stealReassign')
+    if (option === 'shield') return t('game.dice.shield')
+    if (option === 'cancel') return t('game.dice.cancel')
+    return t('game.dice.swap')
   }
 
   async function handleRollDice() {
@@ -1098,7 +1201,7 @@ useEffect(() => {
     const options: DiceOption[] = ['double_hint', 'sabotage_reassign', 'steal_reassign', 'shield', 'cancel', 'swap']
     const option = options[Math.floor(Math.random() * options.length)]
     setRolledDiceOption(option)
-    showCenterNotice(`Dice: ${diceOptionLabel(option)}`, 'info', 1500)
+    showCenterNotice(t('game.notice.diceRoll', { option: diceOptionLabel(option) }), 'info', 1500)
     await runDice(option)
   }
 
@@ -1106,7 +1209,7 @@ useEffect(() => {
     if (!gameId) return
     if (!isGameActive) return
     try {
-      setBusy('Using helper…')
+      setBusy(t('game.busy.usingHelper'))
       const res = await useHelperAction(gameId, action, {})
       if (action === 'random_peek') {
         const pos = Number(res.pos)
@@ -1119,11 +1222,11 @@ useEffect(() => {
             peekFlashTimeoutRef.current = null
           }, 1000)
         }
-        showCenterNotice(`Peek: ${color}`, 'info', 1300)
+        showCenterNotice(t('game.notice.peek', { color }), 'info', 1300)
       } else if (action === 'time_cut') {
-showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`, 'info', 2200)
+showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUpperCase() }), 'info', 2200)
       } else {
-        showCenterNotice('Shuffle unrevealed done', 'info', 2200)
+        showCenterNotice(t('game.notice.shuffleDone'), 'info', 2200)
       }
     } catch (err) {
       console.error('[helper] failed:', err)
@@ -1150,12 +1253,12 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
   const currentTurnTeam = isGameActive ? game?.current_turn_team ?? null : null
   const turnIndicatorClass = !isGameActive ? 'done' : currentTurnTeam === 'red' ? 'red' : currentTurnTeam === 'blue' ? 'blue' : 'idle'
   const turnIndicatorLabel = !isGameActive
-    ? 'Game Finished'
+    ? t('game.turn.gameFinished')
     : currentTurnTeam === 'red'
-      ? 'Red Team Turn'
+      ? t('game.turn.redTeamTurn')
       : currentTurnTeam === 'blue'
-        ? 'Blue Team Turn'
-        : 'Waiting For Turn'
+        ? t('game.turn.blueTeamTurn')
+        : t('game.turn.waiting')
 
   useEffect(() => {
     if (isGameActive) setShowWinTrail(false)
@@ -1166,13 +1269,54 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
   const blueTeam = playable.filter((m) => m.team === 'blue')
 
   function memberDisplayName(userId: string, index: number): string {
-    return displayNameOrFallback(profileByUserId[userId]?.displayName, `Player ${index + 1}`)
+    return displayNameOrFallback(profileByUserId[userId]?.displayName, `${t('game.member.player')} ${index + 1}`)
   }
 
   function memberAvatar(userId: string, team: 'red' | 'blue' | null): string {
     const custom = String(profileByUserId[userId]?.avatarUrl ?? '').trim()
     if (custom) return custom
     return fallbackAvatarFor(team, userId)
+  }
+
+  function renderHintTrail(team: 'red' | 'blue', limit: number, keyPrefix: string): JSX.Element {
+    const items = (teamHintLog[team] ?? []).slice(-limit).reverse()
+    const teamClass = team === 'red' ? 'red' : 'blue'
+
+    if (items.length === 0) {
+      return (
+        <div className="oc-hint-empty-pill">
+          {t('game.symbol.none')}
+        </div>
+      )
+    }
+
+    return (
+      <div className="oc-hint-stack">
+        {items.map((h) => (
+          <div key={`${keyPrefix}${h.id}`} className={`oc-hint-entry ${teamClass}`}>
+            <div className="oc-hint-head">
+              <span className="oc-hint-clue">{h.clue}</span>
+              <span className="oc-hint-num">{h.number}</span>
+            </div>
+
+            {h.words.length > 0 ? (
+              <div className="oc-hint-word-row">
+                {h.words.map((w, idx) => (
+                  <span key={`${h.id}-${w.word}-${idx}`} className={`oc-hint-word ${w.correct ? 'ok' : 'bad'}`}>
+                    {w.word}
+                    <b>{w.correct ? 'OK' : 'X'}</b>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="oc-hint-word-row">
+                <span className="oc-hint-word empty">{t('game.hints.noRevealsYet')}</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    )
   }
 
   const bg =
@@ -1197,16 +1341,16 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
     if (c.revealed && c.revealed_color) {
       if (c.revealed_color === 'blue') return 'linear-gradient(180deg, rgba(70,80,255,0.45), rgba(20,22,40,0.92))'
       if (c.revealed_color === 'red') return 'linear-gradient(180deg, rgba(255,95,95,0.35), rgba(40,18,18,0.95))'
-      if (c.revealed_color === 'assassin') return 'linear-gradient(180deg, rgba(170,176,190,0.34), rgba(22,24,30,0.96))'
-      return 'linear-gradient(180deg, rgba(255,255,255,0.10), rgba(10,10,12,0.96))'
+      if (c.revealed_color === 'assassin') return 'linear-gradient(180deg, rgba(0,0,0,1), rgba(0,0,0,1))'
+      return 'linear-gradient(180deg, rgba(232,236,243,0.98), rgba(198,205,215,0.98))'
     }
     if (hidden) {
-      if (hidden === 'blue') return 'linear-gradient(180deg, rgba(70,80,255,0.30), rgba(10,10,12,0.96))'
-      if (hidden === 'red') return 'linear-gradient(180deg, rgba(255,95,95,0.22), rgba(10,10,12,0.96))'
-      if (hidden === 'assassin') return 'linear-gradient(180deg, rgba(170,176,190,0.30), rgba(22,24,30,0.96))'
-      return 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(10,10,12,0.96))'
+      if (hidden === 'blue') return 'linear-gradient(180deg, rgba(70,80,255,0.34), rgba(22,24,34,0.88))'
+      if (hidden === 'red') return 'linear-gradient(180deg, rgba(255,95,95,0.28), rgba(30,18,18,0.88))'
+      if (hidden === 'assassin') return 'linear-gradient(180deg, rgba(42,44,52,0.50), rgba(16,18,22,0.90))'
+      return 'linear-gradient(180deg, rgba(255,255,255,0.22), rgba(110,116,128,0.88))'
     }
-    return 'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(10,10,12,0.92))'
+    return 'linear-gradient(180deg, rgba(255,255,255,0.22), rgba(108,114,126,0.88))'
   }
 
   function fxClassFor(pos: number): string {
@@ -1290,6 +1434,56 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
           align-items:center;
           gap:8px;
         }
+        .oc-top-actions{
+          display:flex;
+          gap:6px;
+          align-items:center;
+          flex-wrap:wrap;
+          margin-bottom:10px;
+          padding:4px;
+          border-radius:999px;
+          border:1px solid rgba(255,255,255,0.08);
+          background:rgba(255,255,255,0.02);
+        }
+        .oc-top-actions .oc-nav-btn{
+          padding: 7px 10px !important;
+          border-radius: 999px !important;
+          border: 1px solid rgba(255,255,255,0.12) !important;
+          background: rgba(255,255,255,0.045) !important;
+          color: rgba(255,255,255,0.86) !important;
+          font-weight: 760 !important;
+          font-size: 13px !important;
+          line-height: 1 !important;
+          cursor: pointer;
+          transition: background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease;
+        }
+        .oc-top-actions .oc-nav-btn:hover{
+          background: rgba(255,255,255,0.08) !important;
+          border-color: rgba(255,255,255,0.18) !important;
+          color: rgba(255,255,255,0.96) !important;
+        }
+        .oc-top-actions .oc-nav-btn:disabled{
+          opacity: .58 !important;
+          cursor: default;
+        }
+        .oc-top-actions .oc-nav-btn.is-accent{
+          background: rgba(180,235,255,0.07) !important;
+          border-color: rgba(170,255,255,0.22) !important;
+        }
+        .oc-top-actions .oc-nav-btn.is-danger{
+          background: rgba(255,90,90,0.07) !important;
+          border-color: rgba(255,120,120,0.24) !important;
+          color: rgba(255,240,240,0.9) !important;
+        }
+        .oc-top-actions .oc-nav-btn.is-danger:hover{
+          background: rgba(255,90,90,0.11) !important;
+          border-color: rgba(255,120,120,0.34) !important;
+        }
+        .oc-top-actions .oc-nav-icon{
+          width:13px;
+          height:13px;
+          opacity:.84;
+        }
         .oc-nav-icon{
           width:14px;
           height:14px;
@@ -1299,6 +1493,106 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
         }
         .oc-nav-icon-original{
           filter: none;
+        }
+        .oc-hint-stack{
+          display:grid;
+          gap:8px;
+        }
+        .oc-hint-entry{
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.18);
+          background: rgba(8,10,18,0.55);
+          padding: 8px;
+          display:grid;
+          gap: 7px;
+        }
+        .oc-hint-entry.red{
+          border-color: rgba(255,120,120,0.36);
+          background: linear-gradient(180deg, rgba(255,95,95,0.14), rgba(8,10,18,0.52));
+        }
+        .oc-hint-entry.blue{
+          border-color: rgba(120,165,255,0.38);
+          background: linear-gradient(180deg, rgba(95,145,255,0.16), rgba(8,10,18,0.52));
+        }
+        .oc-hint-head{
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:8px;
+        }
+        .oc-hint-clue{
+          display:inline-flex;
+          align-items:center;
+          max-width:100%;
+          min-width:0;
+          padding: 5px 9px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.2);
+          background: rgba(255,255,255,0.08);
+          font-weight: 900;
+          font-size: 12px;
+          letter-spacing: .02em;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .oc-hint-num{
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          min-width: 26px;
+          height: 26px;
+          padding: 0 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,225,150,0.45);
+          background: rgba(255,205,110,0.18);
+          color: rgba(255,240,200,0.98);
+          font-size: 12px;
+          font-weight: 1000;
+        }
+        .oc-hint-word-row{
+          display:flex;
+          flex-wrap:wrap;
+          gap:6px;
+        }
+        .oc-hint-word{
+          display:inline-flex;
+          align-items:center;
+          gap:6px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.18);
+          background: rgba(255,255,255,0.08);
+          font-size: 11px;
+          font-weight: 850;
+          line-height: 1;
+        }
+        .oc-hint-word.ok{
+          border-color: rgba(120,255,175,0.38);
+          background: rgba(95,230,155,0.2);
+          color: rgba(225,255,236,0.98);
+        }
+        .oc-hint-word.bad{
+          border-color: rgba(255,145,145,0.38);
+          background: rgba(255,95,95,0.2);
+          color: rgba(255,230,230,0.98);
+        }
+        .oc-hint-word.empty{
+          border-color: rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.05);
+          color: rgba(230,236,255,0.76);
+          font-weight: 760;
+        }
+        .oc-hint-empty-pill{
+          display:inline-flex;
+          align-items:center;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.05);
+          font-size: 12px;
+          color: rgba(235,240,255,0.72);
+          width: fit-content;
         }
 
         .oc-card{
@@ -1319,6 +1613,10 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
         .oc-card.oc-card-peek{
           box-shadow: 0 0 30px rgba(255,225,120,0.42), 0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 2px rgba(255,225,120,0.65);
           filter: saturate(1.2) brightness(1.12);
+        }
+        .oc-card.oc-card-marked{
+          box-shadow: 0 0 0 2px rgba(255,210,120,0.42), 0 0 28px rgba(255,210,120,0.24), 0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.50);
+          animation: oc-mark-pulse 1s ease-in-out infinite;
         }
         .oc-card.oc-card-spymaster-crossed{
           opacity: 0.78;
@@ -1409,6 +1707,11 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
           52%{ transform: scale(.95); filter: brightness(.86); }
           78%{ transform: scale(1.04); filter: brightness(1.18); }
           100%{ transform: scale(1); filter: brightness(1); box-shadow: 0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.50); }
+        }
+        @keyframes oc-mark-pulse{
+          0%{ filter: brightness(1); }
+          50%{ filter: brightness(1.12); }
+          100%{ filter: brightness(1); }
         }
 
         .oc-center-notice{
@@ -1670,7 +1973,7 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
 
         {/* top counters */}
         <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 12, paddingTop: 6, paddingBottom: 14 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(120,110,255,0.26)' }} title="Blue remaining">
+          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(120,110,255,0.26)' }} title={t('game.counters.blueRemaining')}>
             {blueLeft}
           </div>
 
@@ -1686,7 +1989,7 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
               border: '1px solid rgba(170,255,255,0.40)',
               background: 'rgba(200,255,255,0.10)'
             }}
-            title="Guesses / Timer"
+            title={t('game.counters.guessesTimer')}
           >
             <div style={{ width: 34, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, background: 'rgba(255,255,255,0.16)' }}>
               {pillCount}
@@ -1696,48 +1999,48 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
           <div className={`oc-turn-indicator ${turnIndicatorClass}`} title="Current turn">
             <span className="oc-turn-dot" />
             <span>{turnIndicatorLabel}</span>
-            {isGameActive && isMyTurn ? <span className="oc-turn-sub">Your turn</span> : null}
+            {isGameActive && isMyTurn ? <span className="oc-turn-sub">{t('game.turn.yourTurn')}</span> : null}
           </div>
 
-          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,95,95,0.22)' }} title="Red remaining">
+          <div style={{ width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', fontWeight: 900, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,95,95,0.22)' }} title={t('game.counters.redRemaining')}>
             {redLeft}
           </div>
         </div>
 
         <div style={{ position: 'relative', zIndex: 2, padding: '0 10px 10px' }}>
-          {state === 'loading' && <div style={{ padding: 12 }}>Loading…</div>}
+          {state === 'loading' && <div style={{ padding: 12 }}>{t('game.loading')}</div>}
           {state === 'error' && (
             <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(255,90,90,0.45)', background: panel }}>
-              Error: {error}
+              {t('game.error')}: {error}
             </div>
           )}
 
           {state === 'ready' && game && (
             <>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-                <button className="oc-nav-btn" onClick={handleHome} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+              <div className="oc-top-actions">
+                <button className="oc-nav-btn" onClick={handleHome} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.home} alt="" aria-hidden="true" />
-                  Home
+                  {t('game.nav.home')}
                 </button>
-                <button className="oc-nav-btn" onClick={handleProfile} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                <button className="oc-nav-btn" onClick={handleProfile} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.profile} alt="" aria-hidden="true" />
-                  Profile
+                  {t('game.nav.profile')}
                 </button>
-                <button className="oc-nav-btn" onClick={handleCopyLobbyCode} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                <button className="oc-nav-btn" onClick={handleCopyLobbyCode} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.copy} alt="" aria-hidden="true" />
-                  Copy Lobby Code
+                  {t('game.nav.copyLobbyCode')}
                 </button>
-                <button className="oc-nav-btn" onClick={handleBackToLobby} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                <button className="oc-nav-btn" onClick={handleBackToLobby} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.backToLobby} alt="" aria-hidden="true" />
-                  Back to Lobby
+                  {t('game.nav.backToLobby')}
                 </button>
-                <button className="oc-nav-btn" onClick={() => setShowRules((v) => !v)} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border, background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
+                <button className="oc-nav-btn is-accent" onClick={() => setShowRules((v) => !v)} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.rules} alt="" aria-hidden="true" />
-                  Help / Rules
+                  {t('game.nav.helpRules')}
                 </button>
-                <button className="oc-nav-btn" onClick={handleExitGame} disabled={busy !== null} style={{ padding: '9px 12px', borderRadius: 999, border: '1px solid rgba(255,125,125,0.38)', background: 'rgba(255,85,85,0.14)', color: 'rgba(255,255,255,0.98)', fontWeight: 900, cursor: 'pointer' }}>
+                <button className="oc-nav-btn is-danger" onClick={handleExitGame} disabled={busy !== null}>
                   <img className="oc-nav-icon" src={navIcons.exit} alt="" aria-hidden="true" />
-                  Exit Game
+                  {t('game.nav.exitGame')}
                 </button>
               </div>
 
@@ -1745,30 +2048,30 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <div style={{ opacity: 0.92, fontWeight: 900 }}>
-                    Clue: <span style={{ opacity: 1 }}>{game.clue_word ?? '—'}</span>
+                    {t('game.header.clue')}: <span style={{ opacity: 1 }}>{game.clue_word ?? t('game.symbol.none')}</span>
                     {game.clue_number !== null ? <span style={{ opacity: 0.85 }}> ({game.clue_number})</span> : null}
                   </div>
                   <div style={{ opacity: 0.78, fontWeight: 800, fontSize: 12 }}>
-                    You: {teamLabel(myTeam)} • {amSpymaster ? 'Spymaster' : 'Operative'} • streak: {myStreak}
-                    {!isGameActive && effectiveWinner ? <span> • Winner: {teamLabel(effectiveWinner)}</span> : null}                  </div>
+                    {t('game.header.you')}: {teamLabelText(myTeam)} • {roleLabel(amSpymaster)} • {t('game.header.streak')}: {myStreak}
+                    {!isGameActive && effectiveWinner ? <span> • {t('game.header.winner')}: {teamLabelText(effectiveWinner)}</span> : null}                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   {amSpymaster && (
                     <div style={{ padding: '8px 10px', borderRadius: 999, border, background: panel, fontWeight: 900, opacity: 0.9 }}>
-                      Key: auto visible
+                      {t('game.header.keyAutoVisible')}
                     </div>
                   )}
 
                   {canEndTurnOperate && (
                     <button onClick={handleEndTurn} disabled={busy !== null} style={{ padding: '10px 14px', borderRadius: 999, border, background: 'rgba(255,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
-                      End turn
+                      {t('game.actions.endTurn')}
                     </button>
                   )}
 
                   {amOwner && (
                     <button onClick={handleRestart} disabled={busy !== null} style={{ padding: '10px 14px', borderRadius: 999, border: '1px solid rgba(170,255,255,0.35)', background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
-                      Restart
+                      {t('game.actions.restart')}
                     </button>
                   )}
                 </div>
@@ -1777,10 +2080,10 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
               {/* layout */}
               <div className="oc-game-layout">
                 <div className="oc-team-panel red">
-                  <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(255,220,220,0.98)' }}>Red Team</div>
+                  <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(255,220,220,0.98)' }}>{t('game.team.redTeam')}</div>
                   <div style={{ display: 'grid', gap: 8 }}>
                     {redTeam.length === 0 ? (
-                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>No players</div>
+                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>{t('game.team.noPlayers')}</div>
                     ) : (
                       redTeam.map((m, idx) => {
                         const you = m.user_id === myUserId
@@ -1803,8 +2106,8 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                                 />
                               </div>
                               <div className="oc-member-meta">
-                                <div className="oc-member-name">{you ? `You (${name})` : name}</div>
-                                <div className="oc-member-role">{m.is_spymaster ? 'Spymaster' : 'Operative'}</div>
+                                <div className="oc-member-name">{you ? t('game.member.youName', { name }) : name}</div>
+                                <div className="oc-member-role">{roleLabel(m.is_spymaster)}</div>
                               </div>
                             </div>
                           </div>
@@ -1813,21 +2116,8 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                     )}
                   </div>
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.12)' }}>
-                    <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, marginBottom: 6 }}>Hint Trail</div>
-                    <div style={{ display: 'grid', gap: 6 }}>
-                      {teamHintLog.red.length === 0 ? (
-                        <div style={{ fontSize: 12, opacity: 0.72 }}>—</div>
-                      ) : (
-                        teamHintLog.red.slice(-3).reverse().map((h) => (
-                          <div key={h.id} style={{ fontSize: 12, opacity: 0.9 }}>
-                            <b>{h.clue}</b> ({h.number}){' '}
-                            {h.words.length
-                              ? `• ${h.words.map((w) => `${w.word} ${w.correct ? '✓' : '✗'}`).join(', ')}`
-                              : '• no reveals yet'}
-                          </div>
-                        ))
-                      )}
-                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, marginBottom: 6 }}>{t('game.hints.trail')}</div>
+                    {renderHintTrail('red', 3, 'panel-red-')}
                   </div>
                 </div>
 
@@ -1835,21 +2125,27 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                   {canSpymaster && (
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: 12, borderRadius: 18, border, background: panel }}>
                       <input
+                        ref={clueWordInputRef}
                         value={clueWord}
                         onChange={(e) => setClueWord(e.target.value)}
-                        placeholder="clue word"
+                        onFocus={() => setIsEditingClue(true)}
+                        onBlur={handleClueInputBlur}
+                        placeholder={t('game.inputs.clueWord')}
                         style={{ flex: '1 1 220px', padding: '12px 12px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.35)', color: 'rgba(255,255,255,0.92)', fontWeight: 900, outline: 'none' }}
                       />
                       <input
+                        ref={clueNumberInputRef}
                         type="number"
                         value={clueNumber}
                         onChange={(e) => setClueNumber(Number(e.target.value))}
+                        onFocus={() => setIsEditingClue(true)}
+                        onBlur={handleClueInputBlur}
                         min={0}
                         max={9}
                         style={{ width: 110, padding: '12px 12px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.35)', color: 'rgba(255,255,255,0.92)', fontWeight: 900, outline: 'none' }}
                       />
                       <button onClick={handleSetClue} disabled={busy !== null || clueWord.trim().length === 0} style={{ padding: '12px 16px', borderRadius: 14, border: '1px solid rgba(170,255,255,0.35)', background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
-                        Set clue
+                        {t('game.actions.setClue')}
                       </button>
                     </div>
                   )}
@@ -1864,11 +2160,18 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                       const interactiveClass = !c.revealed ? 'oc-card-interactive' : ''
                       const revealedClass = c.revealed ? 'oc-card-is-revealed' : ''
                       const spymasterCrossedClass = amSpymaster && c.revealed ? 'oc-card-spymaster-crossed' : ''
+                      const mark = revealMarks[c.pos]
+                      const markedClass = mark ? 'oc-card-marked' : ''
+                      const markedByMe = Boolean(mark && mark.byUserId && myUserId && mark.byUserId === myUserId)
                       return (
                         <div key={c.pos} className={`oc-card-shell ${shouldShakeCards ? 'oc-last10' : ''}`} style={{ animationDelay: `${idx * 12}ms` }}>
                           <button
-                            className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${spymasterCrossedClass} ${fxClass}`.trim()}
-                            onClick={() => handleReveal(c.pos)}
+                            className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${spymasterCrossedClass} ${markedClass} ${fxClass}`.trim()}
+                            onClick={(e) => {
+                              const target = e.target as HTMLElement | null
+                              if (target?.closest('[data-mark-remove="1"]')) return
+                              void handleReveal(c.pos)
+                            }}
                             disabled={busy !== null || pendingRevealPos !== null || c.revealed || !isGameActive}
                             style={{
                               position: 'relative',
@@ -1878,13 +2181,78 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                               border: '1px solid rgba(255,255,255,0.10)',
                               background: cardBg(c, hidden),
                               boxShadow: '0 10px 26px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.50)',
-                              color: 'rgba(240,244,255,0.92)',
+                              color: c.revealed && c.revealed_color === 'neutral' ? 'rgba(8,10,14,0.95)' : 'rgba(240,244,255,0.92)',
                               cursor: c.revealed || pendingRevealPos !== null || !isGameActive ? 'not-allowed' : 'pointer',
                               overflow: 'hidden',
                               animationDelay: `${idx * 55}ms`
                             }}
                             title={c.word}
                           >
+                            {mark && !c.revealed && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  left: 8,
+                                  top: 8,
+                                  padding: '3px 8px',
+                                  borderRadius: 999,
+                                  border: '1px solid rgba(255,210,110,0.72)',
+                                  background: 'rgba(35,28,12,0.9)',
+                                  color: 'rgba(255,222,125,0.98)',
+                                  fontSize: 11,
+                                  fontWeight: 900
+                                }}
+                              >
+                                {markedByMe ? 'Click again' : 'Marked'}
+                              </div>
+                            )}
+                            {mark && markedByMe && !c.revealed && (
+                              <div
+                                data-mark-remove="1"
+                                role="button"
+                                aria-label="Remove tag"
+                                title="Remove tag"
+                                onPointerDown={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                                onTouchStart={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  clearRevealMark(c.pos)
+                                }}
+                                style={{
+                                  position: 'absolute',
+                                  left: 8,
+                                  top: 34,
+                                  width: 30,
+                                  height: 30,
+                                  borderRadius: 999,
+                                  border: '1px solid rgba(255,170,170,0.72)',
+                                  background: 'rgba(50,10,10,0.92)',
+                                  color: 'rgba(255,225,225,0.99)',
+                                  display: 'grid',
+                                  placeItems: 'center',
+                                  fontSize: 19,
+                                  fontWeight: 1000,
+                                  lineHeight: 1,
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                  zIndex: 3,
+                                  userSelect: 'none'
+                                }}
+                              >
+                                X
+                              </div>
+                            )}
                             {corner && (
                               <div style={{ position: 'absolute', right: 10, top: 10, width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 900, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.25)', opacity: 0.9 }}>
                                 {corner}
@@ -1892,7 +2260,7 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                             )}
                             {peekFlash?.pos === c.pos && (
                               <div style={{ position: 'absolute', left: 8, top: 8, padding: '2px 6px', borderRadius: 8, border: '1px solid rgba(255,225,120,0.78)', background: 'rgba(255,225,120,0.24)', color: 'rgba(255,245,185,0.98)', fontSize: 11, fontWeight: 900 }}>
-                                {peekFlash.color || 'PEEK'}
+                                {peekFlash.color || t('game.peek')}
                               </div>
                             )}
                             <div className="oc-word" style={{ height: '100%', display: 'grid', placeItems: 'center', padding: '0 10px', textAlign: 'center', fontWeight: 900, letterSpacing: 0.3, textTransform: 'uppercase', opacity: c.revealed ? 0.85 : 0.95 }}>
@@ -1907,40 +2275,40 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                   <div className="oc-utility-row">
                     <div style={{ padding: 12, borderRadius: 18, border, background: panel }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                        <div style={{ fontWeight: 900 }}>Dice</div>
+                        <div style={{ fontWeight: 900 }}>{t('game.dice.title')}</div>
                         <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>
-                          {diceUnlocked ? (diceUsed ? 'Used turn' : 'Ready') : `Streak ${roundCorrectStreak}/3`}
+                          {diceUnlocked ? (diceUsed ? t('game.dice.usedTurn') : t('game.dice.ready')) : t('game.dice.streakProgress', { streak: roundCorrectStreak })}
                         </div>
                       </div>
 
                       <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
                         <button disabled={!isGameActive || !diceUnlocked || diceUsed || busy !== null} onClick={handleRollDice} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive || !diceUnlocked || diceUsed ? 0.55 : 1 }}>
-                          Roll Dice
+                          {t('game.dice.roll')}
                         </button>
                         <div style={{ fontSize: 12, opacity: 0.82, fontWeight: 800 }}>
-                          {rolledDiceOption ? `Last roll: ${diceOptionLabel(rolledDiceOption)}` : 'Roll to get a random dice power.'}
+                          {rolledDiceOption ? t('game.dice.lastRoll', { option: diceOptionLabel(rolledDiceOption) }) : t('game.dice.rollHint')}
                         </div>
                       </div>
                     </div>
 
                     <div style={{ padding: 12, borderRadius: 18, border, background: panel }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Helper Actions</div>
-                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>each once per game</div>
+                      <div style={{ fontWeight: 900 }}>{t('game.helper.title')}</div>
+                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>{t('game.helper.oncePerGame')}</div>
                     </div>
 
                     <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
                       <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('time_cut')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
                         <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.timeCut} alt="" aria-hidden="true" />
-                        Time Cut
+                        {t('game.helper.timeCut')}
                       </button>
                       <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('random_peek')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
                         <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.randomPeek} alt="" aria-hidden="true" />
-                        Random Peek
+                        {t('game.helper.randomPeek')}
                       </button>
                       <button className="oc-nav-btn" disabled={!isGameActive || busy !== null} onClick={() => runHelper('shuffle_unrevealed')} style={{ padding: '10px 12px', borderRadius: 14, border, background: 'rgba(255,255,255,0.06)', color: '#fff', fontWeight: 900, cursor: 'pointer', opacity: !isGameActive ? 0.55 : 1 }}>
                         <img className="oc-nav-icon oc-nav-icon-original" src={helperIcons.shuffle} alt="" aria-hidden="true" />
-                        Card Shuffle
+                        {t('game.helper.cardShuffle')}
                       </button>
                     </div>
                   </div>
@@ -1948,10 +2316,10 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                 </div>
 
                 <div className="oc-team-panel blue">
-                  <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(220,230,255,0.98)' }}>Blue Team</div>
+                  <div style={{ fontWeight: 1000, marginBottom: 10, color: 'rgba(220,230,255,0.98)' }}>{t('game.team.blueTeam')}</div>
                   <div style={{ display: 'grid', gap: 8 }}>
                     {blueTeam.length === 0 ? (
-                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>No players</div>
+                      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>{t('game.team.noPlayers')}</div>
                     ) : (
                       blueTeam.map((m, idx) => {
                         const you = m.user_id === myUserId
@@ -1974,8 +2342,8 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                                 />
                               </div>
                               <div className="oc-member-meta">
-                                <div className="oc-member-name">{you ? `You (${name})` : name}</div>
-                                <div className="oc-member-role">{m.is_spymaster ? 'Spymaster' : 'Operative'}</div>
+                                <div className="oc-member-name">{you ? t('game.member.youName', { name }) : name}</div>
+                                <div className="oc-member-role">{roleLabel(m.is_spymaster)}</div>
                               </div>
                             </div>
                           </div>
@@ -1984,21 +2352,8 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                     )}
                   </div>
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.12)' }}>
-                    <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, marginBottom: 6 }}>Hint Trail</div>
-                    <div style={{ display: 'grid', gap: 6 }}>
-                      {teamHintLog.blue.length === 0 ? (
-                        <div style={{ fontSize: 12, opacity: 0.72 }}>—</div>
-                      ) : (
-                        teamHintLog.blue.slice(-3).reverse().map((h) => (
-                          <div key={h.id} style={{ fontSize: 12, opacity: 0.9 }}>
-                            <b>{h.clue}</b> ({h.number}){' '}
-                            {h.words.length
-                              ? `• ${h.words.map((w) => `${w.word} ${w.correct ? '✓' : '✗'}`).join(', ')}`
-                              : '• no reveals yet'}
-                          </div>
-                        ))
-                      )}
-                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, marginBottom: 6 }}>{t('game.hints.trail')}</div>
+                    {renderHintTrail('blue', 3, 'panel-blue-')}
                   </div>
                 </div>
               </div>
@@ -2009,7 +2364,7 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
         {!isGameActive && effectiveWinner && (
           <div className="oc-win-overlay">
             <div className="oc-win-card">
-              <div className="oc-win-title">{teamLabel(effectiveWinner)} Team Wins</div>
+              <div className="oc-win-title">{t('game.notice.teamWins', { team: teamLabelText(effectiveWinner) })}</div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
                 {amOwner ? (
                   <button
@@ -2017,46 +2372,28 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
                     disabled={busy !== null}
                     style={{ padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(170,255,255,0.42)', background: 'rgba(200,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}
                   >
-                    Start New Lobby
+                    {t('game.win.startNewLobby')}
                   </button>
                 ) : (
-                  <div style={{ opacity: 0.82, fontWeight: 800, paddingTop: 8 }}>Waiting for owner to start new lobby</div>
+                  <div style={{ opacity: 0.82, fontWeight: 800, paddingTop: 8 }}>{t('game.win.waitingOwner')}</div>
                 )}
                 <button
                   onClick={() => setShowWinTrail((v) => !v)}
                   style={{ padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.24)', background: 'rgba(255,255,255,0.10)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}
                 >
-                  {showWinTrail ? 'Hide Hint Trail' : 'Read Hint Trail'}
+                  {showWinTrail ? t('game.win.hideHintTrail') : t('game.win.readHintTrail')}
                 </button>
               </div>
 
               {showWinTrail && (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div style={{ padding: 10, borderRadius: 12, border: '1px solid rgba(255,95,95,0.34)', background: 'rgba(255,95,95,0.10)' }}>
-                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Red Trail</div>
-                    {teamHintLog.red.length === 0 ? (
-                      <div style={{ fontSize: 12, opacity: 0.74 }}>—</div>
-                    ) : (
-                      teamHintLog.red.slice(-6).reverse().map((h) => (
-                        <div key={`win-r-${h.id}`} style={{ fontSize: 12, marginBottom: 4 }}>
-                          <b>{h.clue}</b> ({h.number}){' '}
-                          {h.words.length ? `• ${h.words.map((w) => `${w.word} ${w.correct ? '✓' : '✗'}`).join(', ')}` : '• no reveals yet'}
-                        </div>
-                      ))
-                    )}
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>{t('game.win.redTrail')}</div>
+                    {renderHintTrail('red', 6, 'win-r-')}
                   </div>
                   <div style={{ padding: 10, borderRadius: 12, border: '1px solid rgba(90,140,255,0.36)', background: 'rgba(90,140,255,0.10)' }}>
-                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Blue Trail</div>
-                    {teamHintLog.blue.length === 0 ? (
-                      <div style={{ fontSize: 12, opacity: 0.74 }}>—</div>
-                    ) : (
-                      teamHintLog.blue.slice(-6).reverse().map((h) => (
-                        <div key={`win-b-${h.id}`} style={{ fontSize: 12, marginBottom: 4 }}>
-                          <b>{h.clue}</b> ({h.number}){' '}
-                          {h.words.length ? `• ${h.words.map((w) => `${w.word} ${w.correct ? '✓' : '✗'}`).join(', ')}` : '• no reveals yet'}
-                        </div>
-                      ))
-                    )}
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>{t('game.win.blueTrail')}</div>
+                    {renderHintTrail('blue', 6, 'win-b-')}
                   </div>
                 </div>
               )}
@@ -2073,18 +2410,18 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
         {showRules && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 11, background: 'rgba(0,0,0,0.66)', display: 'grid', placeItems: 'center', padding: 14 }}>
             <div style={{ width: 'min(680px, 95vw)', borderRadius: 16, border, background: 'rgba(0,0,0,0.86)', boxShadow: '0 24px 70px rgba(0,0,0,0.72)', padding: 16, display: 'grid', gap: 12 }}>
-              <div style={{ fontWeight: 1000, fontSize: 20 }}>Help / Rules</div>
+              <div style={{ fontWeight: 1000, fontSize: 20 }}>{t('game.rules.title')}</div>
               <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6, opacity: 0.92 }}>
-                <li>Spymaster gives one-word clue plus number each turn.</li>
-                <li>Operatives reveal cards and can continue on correct guesses.</li>
-                <li>Reveal all your team cards first to win the game.</li>
-                <li>Revealing the assassin ends the game for your team.</li>
-                <li>Dice unlocks after a streak of three correct reveals.</li>
-                <li>Helper actions are one-time per game per team.</li>
+                <li>{t('game.rules.items.1')}</li>
+                <li>{t('game.rules.items.2')}</li>
+                <li>{t('game.rules.items.3')}</li>
+                <li>{t('game.rules.items.4')}</li>
+                <li>{t('game.rules.items.5')}</li>
+                <li>{t('game.rules.items.6')}</li>
               </ul>
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button onClick={() => setShowRules(false)} style={{ padding: '9px 12px', borderRadius: 10, border, background: 'rgba(255,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>
-                  Close
+                  {t('game.actions.close')}
                 </button>
               </div>
             </div>
@@ -2100,3 +2437,4 @@ showCenterNotice(`Time Cut applied to ${String(res.team).toUpperCase()} (half)`,
     </div>
   )
 }
+

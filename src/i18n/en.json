@@ -5,8 +5,8 @@
     "connectionErrorTitle": "Connection error"
   },
   "home": {
-    "title": "OneClue Lobby Hub",
-    "subtitle": "Classic 5x5 Social Deduction",
+    "subtitle": "Social Deduction",
+    "title": "The Cell",
     "desc": "Run private matches, jump into quick games, or spectate friends live.",
     "badges": {
       "grid": "25 Card Grid",
@@ -28,8 +28,7 @@
       "title": "Last Lobby",
       "code": "Code: {{code}}",
       "rejoin": "Rejoin",
-      "forget": "Forget",
-      "forgotToast": "Forgot last lobby."
+      "forget": "Forget"
     },
     "join": {
       "title": "Join Lobby",
@@ -51,14 +50,6 @@
       "openSettings": "Open Settings",
       "profile": "Profile"
     },
-    "toasts": {
-      "noRecentLobby": "No recent lobby found.\nJoin a lobby first.",
-      "signedIn": "Signed in.",
-      "creatingAccount": "Account created.\nCheck email if confirmation is enabled.",
-      "guestUpgraded": "Guest account upgraded.",
-      "nowGuest": "Now playing as guest.",
-      "continueGuest": "Continuing as guest."
-    },
     "busy": {
       "creatingLobby": "Creating lobby…",
       "creatingPowersLobby": "Creating powers lobby…",
@@ -69,29 +60,146 @@
       "creatingAccount": "Creating account...",
       "loggingOut": "Logging out..."
     },
-    "errors": {
+    "toasts": {
+      "forgotLast": "Forgot last lobby.",
+      "noRecentLobby": "No recent lobby found.\nJoin a lobby first.",
+      "signedIn": "Signed in.",
+      "guestUpgraded": "Guest account upgraded.",
+      "accountCreated": "Account created.\nCheck email if confirmation is enabled.",
+      "nowGuest": "Now playing as guest.",
+      "continueGuest": "Continuing as guest."
+    },
+    "screens": {
+      "loadingKicker": "Classic 5x5",
+      "loadingTitle": "OneClue",
+      "loading": "Loading…",
       "couldNotStart": "Could not start the app.",
-      "reload": "Reload",
-      "loading": "Loading…"
+      "errorTitle": "Error",
+      "reload": "Reload"
+    }
+  },
+  "lobby": {
+    "nav": {
+      "home": "Home",
+      "settings": "Settings",
+      "profile": "Profile",
+      "leaveLobby": "Leave Lobby",
+      "english": "English",
+      "arabic": "Arabic"
+    },
+    "loading": "Joining and loading...",
+    "error": "Error",
+    "presence": {
+      "online": "online",
+      "away": "away"
+    },
+    "labels": {
+      "ready": "ready",
+      "yes": "yes",
+      "no": "no",
+      "player": "Player"
+    },
+    "team": {
+      "red": "Red",
+      "blue": "Blue"
+    },
+    "role": {
+      "owner": "owner",
+      "spymaster": "Leader",
+      "operative": "Cell",
+      "spectator": "spectator"
+    },
+    "busy": {
+      "movingToTeam": "Moving to {{team}}...",
+      "makingSpymaster": "Making spymaster...",
+      "makingOperative": "Making operative...",
+      "startingGame": "Starting game...",
+      "settingReady": "Setting ready...",
+      "settingNotReady": "Setting not ready...",
+      "leaving": "Leaving..."
+    },
+    "leave": {
+      "title": "Leave lobby?",
+      "body": "You can join again with the lobby code.",
+      "cancel": "Cancel",
+      "confirm": "Leave"
+    },
+    "panels": {
+      "lobby": "Lobby",
+      "setup": "Game Setup"
+    },
+    "status": {
+      "open": "open",
+      "in_game": "in game",
+      "closed": "closed"
+    },
+    "meta": {
+      "you": "You",
+      "team": "team",
+      "role": "role",
+      "owner": "Owner",
+      "youOwner": "you",
+      "otherOwner": "other player",
+      "ready": "Ready",
+      "spectating": "You are spectating. Team actions are disabled."
+    },
+    "copy": {
+      "codeLabel": "code",
+      "inviteLabel": "invite link",
+      "code": "Copy Code",
+      "invite": "Copy Invite Link",
+      "copied": "{{label}} copied",
+      "copiedManual": "Copied manually",
+      "prompt": "Copy {{label}}:"
+    },
+    "setup": {
+      "red": "Red Team",
+      "blue": "Blue Team",
+      "operatives": "operatives",
+      "readyRequired": "Ready required",
+      "ok": "ok",
+      "notYet": "not yet"
+    },
+    "actions": {
+      "setReady": "Set Ready",
+      "setNotReady": "Set Not Ready",
+      "startGame": "Start Game",
+      "requireReady": "Require everyone ready before start"
+    },
+    "hints": {
+      "needSetup": "Need 1 spymaster + 1 operative per team{{extra}}.",
+      "plusReady": "+ everyone ready"
+    },
+    "columns": {
+      "red": "Red Team ({{count}})",
+      "blue": "Blue Team ({{count}})",
+      "spectators": "Spectators ({{count}})"
+    },
+    "empty": {
+      "noPlayers": "No players assigned.",
+      "noSpectators": "No spectators."
+    },
+    "info": {
+      "locked": "Teams and roles are locked while lobby is not open."
     }
   },
   "profile": {
-    "title": "Profile",
-    "subtitle": "Account Center",
-    "desc": "Manage identity, game preferences, privacy, and account security.",
-    "backToLobby": "Back To Lobby",
-    "returnToGame": "Return To Game",
-    "loading": "Loading…",
-    "error": "Error",
-    "saved": "Saved",
+    "header": {
+      "eyebrow": "Account Center",
+      "title": "Profile",
+      "subtitle": "Manage identity, game preferences, privacy, and account security.",
+      "userId": "User ID"
+    },
+    "loading": "Loading...",
+    "errorTitle": "Error",
     "sections": {
-      "basic": "Basic Info",
-      "prefs": "Game Preferences",
+      "basicInfo": "Basic Info",
+      "preferences": "Game Preferences",
       "privacy": "Privacy",
-      "notifs": "Notifications",
-      "stats": "Game Statistics",
+      "notifications": "Notifications",
+      "statistics": "Game Statistics",
       "security": "Security",
-      "actions": "Account Actions"
+      "accountActions": "Account Actions"
     },
     "fields": {
       "displayName": "Display Name",
@@ -102,35 +210,215 @@
       "language": "Language",
       "region": "Region",
       "preferredTeam": "Preferred Team",
-      "darkPanels": "Use Dark Panels",
+      "useDarkPanels": "Use Dark Panels",
       "publicProfile": "Public Profile",
-      "showOnline": "Show Online Status",
-      "allowInvites": "Allow Lobby Invites",
+      "showOnlineStatus": "Show Online Status",
+      "allowLobbyInvites": "Allow Lobby Invites",
       "emailUpdates": "Email Updates",
-      "gameAlerts": "Game Alerts",
-      "gamesPlayed": "Games Played",
-      "timesWon": "Times Won",
-      "timesLost": "Times Lost",
-      "ratio": "Win/Loss Ratio",
-      "mostTeammate": "Most Teammate"
+      "gameAlerts": "Game Alerts"
     },
     "placeholders": {
       "yourName": "Your name",
       "nickname": "nickname",
-      "avatar": "https://…",
+      "avatarUrl": "https://...",
       "bio": "Short bio"
     },
-    "buttons": {
+    "options": {
+      "language": {
+        "arabic": "Arabic",
+        "english": "English"
+      },
+      "region": {
+        "middleEast": "Middle East",
+        "europe": "Europe",
+        "northAmerica": "North America"
+      },
+      "team": {
+        "blue": "Blue",
+        "red": "Red",
+        "auto": "Auto"
+      }
+    },
+    "stats": {
+      "gamesPlayed": "Games Played",
+      "timesWon": "Times Won",
+      "timesLost": "Times Lost",
+      "winLossRatio": "Win/Loss Ratio",
+      "mostTeammate": "Most Teammate",
+      "games": "games",
+      "noTeammate": "No teammate data yet"
+    },
+    "actions": {
+      "backToLobby": "Back To Lobby",
+      "returnToGame": "Return To Game",
       "changePassword": "Change Password",
       "manage2fa": "Manage 2FA",
       "activeSession": "Active Session",
-      "save": "Save Changes",
-      "saving": "Saving…",
-      "export": "Export Data",
-      "delete": "Delete Account"
+      "saving": "Saving...",
+      "saveChanges": "Save Changes",
+      "exportData": "Export Data",
+      "deleteAccount": "Delete Account"
     },
-    "statsText": {
-      "noTeammate": "No teammate data yet"
+    "notice": {
+      "saved": "Saved",
+      "twoFaPending": "2FA needs Supabase MFA setup. We can add it later with MFA enrollment APIs.",
+      "deletePending": "Delete Account needs a server-side admin action (Supabase auth user deletion). If you want it, we can add an RPC/Edge Function later."
+    },
+    "password": {
+      "newPrompt": "New password:",
+      "repeatPrompt": "Repeat new password:",
+      "mismatch": "Passwords do not match",
+      "tooShort": "Password must be at least 8 characters",
+      "updated": "Password updated"
+    },
+    "session": {
+      "none": "No active session",
+      "unknown": "unknown",
+      "active": "Signed in as: {{email}} | expires: {{exp}}"
+    },
+    "errors": {
+      "load": "Failed to load profile",
+      "save": "Failed to save profile",
+      "changePassword": "Failed to change password",
+      "readSession": "Failed to read session"
+    }
+  },
+  "game": {
+    "loading": "Loading...",
+    "error": "Error",
+    "symbol": {
+      "none": "-"
+    },
+    "team": {
+      "red": "Red",
+      "blue": "Blue",
+      "none": "-",
+      "redTeam": "Red Team",
+      "blueTeam": "Blue Team",
+      "noPlayers": "No players"
+    },
+    "role": {
+      "spymaster": "Spymaster",
+      "operative": "Operative"
+    },
+    "turn": {
+      "gameFinished": "Game Finished",
+      "redTeamTurn": "Red Team Turn",
+      "blueTeamTurn": "Blue Team Turn",
+      "waiting": "Waiting For Turn",
+      "yourTurn": "Your turn"
+    },
+    "counters": {
+      "blueRemaining": "Blue remaining",
+      "redRemaining": "Red remaining",
+      "guessesTimer": "Guesses / Timer"
+    },
+    "nav": {
+      "home": "Home",
+      "profile": "Profile",
+      "copyLobbyCode": "Copy Lobby Code",
+      "backToLobby": "Back to Lobby",
+      "helpRules": "Help / Rules",
+      "exitGame": "Exit Game"
+    },
+    "header": {
+      "clue": "Clue",
+      "you": "You",
+      "streak": "streak",
+      "winner": "Winner",
+      "keyAutoVisible": "Key: auto visible"
+    },
+    "member": {
+      "player": "Player",
+      "youName": "You ({{name}})"
+    },
+    "hints": {
+      "trail": "Hint Trail",
+      "noRevealsYet": "no reveals yet"
+    },
+    "inputs": {
+      "clueWord": "clue word"
+    },
+    "actions": {
+      "setClue": "Set clue",
+      "endTurn": "End turn",
+      "restart": "Restart",
+      "close": "Close"
+    },
+    "busy": {
+      "settingClue": "Setting clue...",
+      "endingTurn": "Ending turn...",
+      "leaving": "Leaving...",
+      "restarting": "Restarting...",
+      "usingDice": "Using dice...",
+      "usingHelper": "Using helper..."
+    },
+    "notice": {
+      "teamTurn": "{{team}} Team Turn",
+      "clueSet": "Clue: {{clue}} ({{number}})",
+      "teamWins": "{{team}} Team Wins",
+      "gameFinished": "Game Finished",
+      "gameAbandoned": "Game Abandoned",
+      "loadLobbyCodeFailed": "Could not load lobby code.",
+      "lobbyCodeCopied": "Lobby code copied: {{code}}",
+      "copyFailed": "Copy failed.",
+      "invalidPosition": "Invalid position.",
+      "invalidPositions": "Invalid positions.",
+      "diceUsed": "Dice used.",
+      "diceRoll": "Dice: {{option}}",
+      "peek": "Peek: {{color}}",
+      "timeCutApplied": "Time Cut applied to {{team}} (half)",
+      "shuffleDone": "Shuffle unrevealed done"
+    },
+    "confirm": {
+      "exitGame": "Exit this game completely and return home?"
+    },
+    "prompt": {
+      "targetPos": "Enter the target position (0-24):",
+      "swapPosA": "Enter pos_a (your team unrevealed) 0-24:",
+      "swapPosB": "Enter pos_b (any unrevealed) 0-24:"
+    },
+    "dice": {
+      "title": "Dice",
+      "usedTurn": "Used turn",
+      "ready": "Ready",
+      "streakProgress": "Streak {{streak}}/3",
+      "roll": "Roll Dice",
+      "lastRoll": "Last roll: {{option}}",
+      "rollHint": "Roll to get a random dice power.",
+      "doubleHint": "Double Hint",
+      "sabotageReassign": "Sabotage Reassign",
+      "stealReassign": "Steal Reassign",
+      "shield": "Shield",
+      "cancel": "Cancel",
+      "swap": "Swap"
+    },
+    "helper": {
+      "title": "Helper Actions",
+      "oncePerGame": "each once per game",
+      "timeCut": "Time Cut",
+      "randomPeek": "Random Peek",
+      "cardShuffle": "Card Shuffle"
+    },
+    "peek": "PEEK",
+    "win": {
+      "startNewLobby": "Start New Lobby",
+      "waitingOwner": "Waiting for owner to start new lobby",
+      "readHintTrail": "Read Hint Trail",
+      "hideHintTrail": "Hide Hint Trail",
+      "redTrail": "Red Trail",
+      "blueTrail": "Blue Trail"
+    },
+    "rules": {
+      "title": "Help / Rules",
+      "items": {
+        "1": "Spymaster gives one-word clue plus number each turn.",
+        "2": "Operatives reveal cards and can continue on correct guesses.",
+        "3": "Reveal all your team cards first to win the game.",
+        "4": "Revealing the assassin ends the game for your team.",
+        "5": "Dice unlocks after a streak of three correct reveals.",
+        "6": "Helper actions are one-time per game per team."
+      }
     }
   }
 }

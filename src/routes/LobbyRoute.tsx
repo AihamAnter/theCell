@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { supabase } from '../lib/supabaseClient'
 import { getLobbyByCode, joinLobby, joinLobbyAsSpectator, type Lobby } from '../lib/lobbies'
 import { startGame } from '../lib/games'
@@ -42,10 +43,10 @@ function supaErr(err: unknown): string {
   return 'Unknown error'
 }
 
-function displayNameFor(m: MemberRow, index: number): string {
+function displayNameFor(m: MemberRow, index: number, fallbackLabel = 'Player'): string {
   const n = (m.profiles?.display_name ?? '').trim()
   if (n) return n
-  return `Player ${index + 1}`
+  return `${fallbackLabel} ${index + 1}`
 }
 
 function readBool(key: string, fallback: boolean): boolean {
@@ -81,9 +82,9 @@ function isOnline(lastSeen: string | null | undefined): boolean {
   return Date.now() - ms <= ONLINE_MS
 }
 
-function statusPill(lastSeen: string | null | undefined): { text: string; bg: string } {
-  if (isOnline(lastSeen)) return { text: 'online', bg: 'rgba(40,190,120,0.16)' }
-  return { text: 'away', bg: 'rgba(255,255,255,0.06)' }
+function statusPill(lastSeen: string | null | undefined): { textKey: string; bg: string } {
+  if (isOnline(lastSeen)) return { textKey: 'lobby.presence.online', bg: 'rgba(40,190,120,0.16)' }
+  return { textKey: 'lobby.presence.away', bg: 'rgba(255,255,255,0.06)' }
 }
 
 const AVATAR_POOL = {
@@ -131,7 +132,12 @@ export default function LobbyRoute() {
   const { code } = useParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const { t, i18n } = useTranslation()
   const lobbyCode = useMemo(() => (code ?? '').trim().toUpperCase(), [code])
+  const currentLang: 'en' | 'ar' = useMemo(() => {
+    const raw = String(i18n.resolvedLanguage ?? i18n.language ?? 'en').toLowerCase()
+    return raw.startsWith('ar') ? 'ar' : 'en'
+  }, [i18n.language, i18n.resolvedLanguage])
 
   const spectate = useMemo(() => {
     const sp = new URLSearchParams(location.search).get('spectate')
@@ -188,14 +194,14 @@ export default function LobbyRoute() {
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         await navigator.clipboard.writeText(clean)
-        showNotice(`${label} copied`)
+        showNotice(t('lobby.copy.copied', { label }))
         return
       }
-      window.prompt(`Copy ${label}:`, clean)
-      showNotice('Copied manually')
+      window.prompt(t('lobby.copy.prompt', { label }), clean)
+      showNotice(t('lobby.copy.copiedManual'))
     } catch {
-      window.prompt(`Copy ${label}:`, clean)
-      showNotice('Copied manually')
+      window.prompt(t('lobby.copy.prompt', { label }), clean)
+      showNotice(t('lobby.copy.copiedManual'))
     }
   }
 
@@ -374,7 +380,7 @@ export default function LobbyRoute() {
   async function handleSetTeam(targetUserId: string, team: 'red' | 'blue') {
     if (!lobby) return
     try {
-      setBusy(`Moving to ${team}…`)
+      setBusy(t('lobby.busy.movingToTeam', { team: t(`lobby.team.${team}`) }))
       const { error } = await supabase.rpc('set_member_team', {
         p_lobby_id: lobby.id,
         p_user_id: targetUserId,
@@ -394,7 +400,7 @@ export default function LobbyRoute() {
   async function handleToggleSpymaster(targetUserId: string, makeSpymaster: boolean) {
     if (!lobby) return
     try {
-      setBusy(makeSpymaster ? 'Making spymaster…' : 'Making operative…')
+      setBusy(makeSpymaster ? t('lobby.busy.makingSpymaster') : t('lobby.busy.makingOperative'))
 
       const { error } = await supabase.rpc('set_member_spymaster', {
         p_lobby_id: lobby.id,
@@ -416,7 +422,7 @@ export default function LobbyRoute() {
   async function handleStartGame() {
     if (!lobby) return
     try {
-      setBusy('Starting game…')
+      setBusy(t('lobby.busy.startingGame'))
       const gameId = await startGame(lobby.id)
       navigate(`/game/${gameId}`)
     } catch (err) {
@@ -439,7 +445,7 @@ export default function LobbyRoute() {
     const next = !(mine.is_ready ?? false)
 
     try {
-      setBusy(next ? 'Setting ready…' : 'Setting not ready…')
+      setBusy(next ? t('lobby.busy.settingReady') : t('lobby.busy.settingNotReady'))
       const { error } = await supabase
         .from('lobby_members')
         .update({ is_ready: next })
@@ -470,7 +476,7 @@ export default function LobbyRoute() {
     if (!myUserId) return
 
     try {
-      setBusy('Leaving…')
+      setBusy(t('lobby.busy.leaving'))
 
       const { error } = await supabase.from('lobby_members').delete().eq('lobby_id', lobby.id).eq('user_id', myUserId)
       if (error) throw error
@@ -490,8 +496,12 @@ export default function LobbyRoute() {
   const myRow = myUserId ? members.find((m) => m.user_id === myUserId) : null
   const amSpectator = myRow?.role === 'spectator'
 
-  const myGameRoleLabel = amSpectator ? 'spectator' : myRow?.is_spymaster ? 'spymaster' : 'operative'
-  const myTeamLabel = amSpectator ? '-' : myRow?.team ?? '-'
+  const myGameRoleLabel = amSpectator
+    ? t('lobby.role.spectator')
+    : myRow?.is_spymaster
+      ? t('lobby.role.spymaster')
+      : t('lobby.role.operative')
+  const myTeamLabel = amSpectator ? '-' : myRow?.team ? t(`lobby.team.${myRow.team}`) : '-'
   const redMembers = members.filter((m) => m.team === 'red' && (m.role === 'owner' || m.role === 'player'))
   const blueMembers = members.filter((m) => m.team === 'blue' && (m.role === 'owner' || m.role === 'player'))
   const spectators = members.filter((m) => m.role === 'spectator')
@@ -507,9 +517,9 @@ export default function LobbyRoute() {
   }
 
   function roleBadge(member: MemberRow) {
-    if (member.role === 'owner') return 'owner'
-    if (member.is_spymaster) return 'spymaster'
-    return 'operative'
+    if (member.role === 'owner') return t('lobby.role.owner')
+    if (member.is_spymaster) return t('lobby.role.spymaster')
+    return t('lobby.role.operative')
   }
 
   function shortUserId(id: string) {
@@ -557,7 +567,7 @@ export default function LobbyRoute() {
               <img
                 className="lobbyMemberAvatar"
                 src={avatar}
-                alt={`${displayNameFor(member, index)} avatar`}
+                alt={`${displayNameFor(member, index, t('lobby.labels.player'))} avatar`}
                 onError={(e) => {
                   const img = e.currentTarget
                   if (img.src.endsWith(fallbackAvatar)) return
@@ -566,7 +576,7 @@ export default function LobbyRoute() {
               />
             </div>
             <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
-              <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index)}</div>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index, t('lobby.labels.player'))}</div>
               <div style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.72 }}>{shortUserId(member.user_id)}</div>
             </div>
           </div>
@@ -582,33 +592,33 @@ export default function LobbyRoute() {
               fontWeight: 800
             }}
           >
-            {pill.text}
+            {t(pill.textKey)}
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, opacity: 0.92 }}>
           <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>{roleBadge(member)}</span>
           <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>
-            ready: {member.is_ready ? 'yes' : 'no'}
+            {t('lobby.labels.ready')}: {member.is_ready ? t('lobby.labels.yes') : t('lobby.labels.no')}
           </span>
         </div>
 
         {isOwner && lobby?.status === 'open' && member.role !== 'spectator' && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <button onClick={() => handleSetTeam(member.user_id, 'red')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
-              Red
+              {t('lobby.team.red')}
             </button>
             <button onClick={() => handleSetTeam(member.user_id, 'blue')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
-              Blue
+              {t('lobby.team.blue')}
             </button>
             {member.team ? (
               member.is_spymaster ? (
                 <button onClick={() => handleToggleSpymaster(member.user_id, false)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
-                  Operative
+                  {t('lobby.role.operative')}
                 </button>
               ) : (
                 <button onClick={() => handleToggleSpymaster(member.user_id, true)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
-                  Spymaster
+                  {t('lobby.role.spymaster')}
                 </button>
               )
             ) : null}
@@ -877,8 +887,8 @@ export default function LobbyRoute() {
               padding: 14
             }}
           >
-            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>Leave lobby?</div>
-            <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 12 }}>You can join again with the lobby code.</div>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>{t('lobby.leave.title')}</div>
+            <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 12 }}>{t('lobby.leave.body')}</div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button
@@ -887,7 +897,7 @@ export default function LobbyRoute() {
                 disabled={busy !== null}
                 style={btnBase}
               >
-                Cancel
+                {t('lobby.leave.cancel')}
               </button>
               <button
                 type="button"
@@ -898,7 +908,7 @@ export default function LobbyRoute() {
                 disabled={busy !== null}
                 style={{ ...btnBase, borderColor: 'rgba(255,120,120,0.35)' }}
               >
-                Leave
+                {t('lobby.leave.confirm')}
               </button>
             </div>
           </div>
@@ -907,19 +917,35 @@ export default function LobbyRoute() {
 
       <div className="lobbyShell">
         <div className="lobbyTopbar">
-          <button onClick={() => navigate('/')} style={btnBase}>Home</button>
-          <button onClick={() => navigate(`/settings/${lobbyCode}`)} style={btnBase}>Settings</button>
-          <button onClick={() => navigate('/profile')} style={btnBase}>Profile</button>
-          <button onClick={handleLeaveLobby} disabled={!myRow || busy !== null} style={{ ...btnBase, marginLeft: 'auto', borderColor: 'rgba(255,120,120,0.35)' }}>
-            Leave Lobby
-          </button>
+          <button onClick={() => navigate('/')} style={btnBase}>{t('lobby.nav.home')}</button>
+          <button onClick={() => navigate(`/settings/${lobbyCode}`)} style={btnBase}>{t('lobby.nav.settings')}</button>
+          <button onClick={() => navigate('/profile')} style={btnBase}>{t('lobby.nav.profile')}</button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => void i18n.changeLanguage('en')}
+              disabled={currentLang === 'en'}
+              style={{ ...btnBase, opacity: currentLang === 'en' ? 1 : 0.75 }}
+            >
+              {t('lobby.nav.english')}
+            </button>
+            <button
+              onClick={() => void i18n.changeLanguage('ar')}
+              disabled={currentLang === 'ar'}
+              style={{ ...btnBase, opacity: currentLang === 'ar' ? 1 : 0.75 }}
+            >
+              {t('lobby.nav.arabic')}
+            </button>
+            <button onClick={handleLeaveLobby} disabled={!myRow || busy !== null} style={{ ...btnBase, borderColor: 'rgba(255,120,120,0.35)' }}>
+              {t('lobby.nav.leaveLobby')}
+            </button>
+          </div>
         </div>
 
-        {state === 'loading' && <div className="lobbyLoading">Joining and loading...</div>}
+        {state === 'loading' && <div className="lobbyLoading">{t('lobby.loading')}</div>}
 
         {state === 'error' && (
           <div className="lobbyError">
-            Error: {error}
+            {t('lobby.error')}: {error}
           </div>
         )}
 
@@ -927,35 +953,35 @@ export default function LobbyRoute() {
           <>
             <div className="lobby-grid-main">
               <div className="lobbyPanel">
-                <div className="lobbyMetaTitle">Lobby</div>
+                <div className="lobbyMetaTitle">{t('lobby.panels.lobby')}</div>
                 <div className="lobbyCodeRow">
                   <div className="lobbyCode">{lobby.code}</div>
                   <span className={`lobbyStatusPill ${lobby.status}`}>
-                    {lobby.status}
+                    {t(`lobby.status.${lobby.status}`)}
                   </span>
                 </div>
 
                 <div className="lobbyMetaLine">
-                  You: <b>{myRow ? displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id)) : '-'}</b> . team <b>{myTeamLabel}</b> . role <b>{myGameRoleLabel}</b>
+                  {t('lobby.meta.you')}: <b>{myRow ? displayNameFor(myRow, members.findIndex((x) => x.user_id === myRow.user_id), t('lobby.labels.player')) : '-'}</b> . {t('lobby.meta.team')} <b>{myTeamLabel}</b> . {t('lobby.meta.role')} <b>{myGameRoleLabel}</b>
                 </div>
                 <div className="lobbyMetaLine">
-                  Owner: <b>{isOwner ? 'you' : 'other player'}</b> . Ready: <b>{readyCount}</b>/<b>{playableCount}</b>
+                  {t('lobby.meta.owner')}: <b>{isOwner ? t('lobby.meta.youOwner') : t('lobby.meta.otherOwner')}</b> . {t('lobby.meta.ready')}: <b>{readyCount}</b>/<b>{playableCount}</b>
                 </div>
-                {amSpectator && <div className="lobbyMetaLine">You are spectating. Team actions are disabled.</div>}
+                {amSpectator && <div className="lobbyMetaLine">{t('lobby.meta.spectating')}</div>}
 
                 <div className="lobbyActionsRow">
-                  <button onClick={() => copyText('code', lobby.code)} disabled={!lobby.code} style={btnBase}>Copy Code</button>
-                  <button onClick={() => copyText('invite link', lobbyLink)} disabled={!lobbyLink} style={btnBase}>Copy Invite Link</button>
+                  <button onClick={() => copyText(t('lobby.copy.codeLabel'), lobby.code)} disabled={!lobby.code} style={btnBase}>{t('lobby.copy.code')}</button>
+                  <button onClick={() => copyText(t('lobby.copy.inviteLabel'), lobbyLink)} disabled={!lobbyLink} style={btnBase}>{t('lobby.copy.invite')}</button>
                   {notice && <span className="lobbyNotice">{notice}</span>}
                 </div>
               </div>
 
               <div className="lobbyPanel">
-                <div className="lobbyMetaTitle">Game Setup</div>
+                <div className="lobbyMetaTitle">{t('lobby.panels.setup')}</div>
                 <div className="lobbySetupStats">
-                  <div>Red Team: spymaster <b>{redSpy}</b>, operatives <b>{redOps}</b></div>
-                  <div>Blue Team: spymaster <b>{blueSpy}</b>, operatives <b>{blueOps}</b></div>
-                  {requireReady && <div>Ready required: <b>{readyOk ? 'ok' : 'not yet'}</b></div>}
+                  <div>{t('lobby.setup.red')}: {t('lobby.role.spymaster')} <b>{redSpy}</b>, {t('lobby.setup.operatives')} <b>{redOps}</b></div>
+                  <div>{t('lobby.setup.blue')}: {t('lobby.role.spymaster')} <b>{blueSpy}</b>, {t('lobby.setup.operatives')} <b>{blueOps}</b></div>
+                  {requireReady && <div>{t('lobby.setup.readyRequired')}: <b>{readyOk ? t('lobby.setup.ok') : t('lobby.setup.notYet')}</b></div>}
                 </div>
 
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -964,27 +990,27 @@ export default function LobbyRoute() {
                     disabled={!myRow || busy !== null || lobby.status !== 'open' || amSpectator}
                     style={{ ...btnBase, borderColor: 'rgba(150,240,190,0.35)' }}
                   >
-                    {myRow?.is_ready ? 'Set Not Ready' : 'Set Ready'}
+                    {myRow?.is_ready ? t('lobby.actions.setNotReady') : t('lobby.actions.setReady')}
                   </button>
                   <button
                     onClick={handleStartGame}
                     disabled={!canStart}
                     style={{ ...btnBase, borderColor: canStart ? 'rgba(255,220,120,0.55)' : 'rgba(255,255,255,0.16)', opacity: canStart ? 1 : 0.6 }}
                   >
-                    Start Game
+                    {t('lobby.actions.startGame')}
                   </button>
                 </div>
 
                 {isOwner && (
                   <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, opacity: 0.95 }}>
                     <input type="checkbox" checked={requireReady} onChange={(e) => setRequireReady(e.target.checked)} disabled={lobby.status !== 'open'} />
-                    <span>Require everyone ready before start</span>
+                    <span>{t('lobby.actions.requireReady')}</span>
                   </label>
                 )}
 
                 {!canStart && (
                   <div className="lobbyHint">
-                    Need 1 spymaster + 1 operative per team{requireReady ? ' + everyone ready' : ''}.
+                    {t('lobby.hints.needSetup', { extra: requireReady ? ` ${t('lobby.hints.plusReady')}` : '' })}
                   </div>
                 )}
               </div>
@@ -992,30 +1018,30 @@ export default function LobbyRoute() {
 
             <div className="lobby-teams">
               <div className="lobbyCol red">
-                <div className="lobbyColTitle">Red Team ({redMembers.length})</div>
+                <div className="lobbyColTitle">{t('lobby.columns.red', { count: redMembers.length })}</div>
                 <div className="lobbyRows">
-                  {redMembers.length === 0 ? <div className="lobbyMuted">No players assigned.</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
+                  {redMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
                 </div>
               </div>
 
               <div className="lobbyCol blue">
-                <div className="lobbyColTitle">Blue Team ({blueMembers.length})</div>
+                <div className="lobbyColTitle">{t('lobby.columns.blue', { count: blueMembers.length })}</div>
                 <div className="lobbyRows">
-                  {blueMembers.length === 0 ? <div className="lobbyMuted">No players assigned.</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
+                  {blueMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
                 </div>
               </div>
 
               <div className="lobbyCol neutral">
-                <div className="lobbyColTitle">Spectators ({spectators.length})</div>
+                <div className="lobbyColTitle">{t('lobby.columns.spectators', { count: spectators.length })}</div>
                 <div className="lobbyRows">
-                  {spectators.length === 0 ? <div className="lobbyMuted">No spectators.</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
+                  {spectators.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noSpectators')}</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
                 </div>
               </div>
             </div>
 
             {lobby.status !== 'open' && (
               <div className="lobbyInfoStrip">
-                Teams and roles are locked while lobby is not open.
+                {t('lobby.info.locked')}
               </div>
             )}
           </>

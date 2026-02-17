@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { supabase } from '../lib/supabaseClient'
-import i18n from '../i18n'
 import { getMyProfile, updateMyProfile, type Profile } from '../lib/profile'
 import { getMostTeammate, getWinLossRatio, readPlayerStatsFromPreferences, type PlayerStats } from '../lib/playerStats'
 
@@ -24,12 +24,20 @@ type ProfilePrefs = {
   darkPanels?: boolean
 }
 
+type UiLang = 'ar' | 'en'
+
 function asBool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback
 }
 
 function asStr(v: unknown, fallback: string): string {
   return typeof v === 'string' ? v : fallback
+}
+
+function parseLang(v: unknown): UiLang {
+  const raw = String(v ?? '').trim().toLowerCase()
+  if (raw === 'ar' || raw === 'arabic' || raw.includes('عرب')) return 'ar'
+  return 'en'
 }
 
 function downloadJson(filename: string, obj: unknown) {
@@ -48,6 +56,8 @@ function downloadJson(filename: string, obj: unknown) {
 }
 
 export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
+  const { t, i18n } = useTranslation()
+
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -56,26 +66,28 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
   const [stats, setStats] = useState<PlayerStats | null>(null)
   const [email, setEmail] = useState<string>('')
 
-  // Basic Info
   const [displayName, setDisplayName] = useState('')
   const [username, setUsername] = useState('')
   const [bio, setBio] = useState('')
   const [avatarUrl, setAvatarUrl] = useState('')
 
-  // Preferences
-  const [language, setLanguage] = useState<'Arabic' | 'English'>('English')
-  void i18n.changeLanguage(language === 'Arabic' ? 'ar' : 'en')
+  const [language, setLanguage] = useState<UiLang>('en')
+  useEffect(() => {
+    const target = language
+    const current = String(i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase()
+    const alreadyUsingTarget = target === 'ar' ? current.startsWith('ar') : current.startsWith('en')
+    if (alreadyUsingTarget) return
+    void i18n.changeLanguage(target)
+  }, [language, i18n])
 
   const [region, setRegion] = useState<'Middle East' | 'Europe' | 'North America'>('Middle East')
   const [teamColor, setTeamColor] = useState<'Blue' | 'Red' | 'Auto'>('Auto')
   const [darkPanels, setDarkPanels] = useState(true)
 
-  // Privacy
   const [publicProfile, setPublicProfile] = useState(false)
   const [showOnline, setShowOnline] = useState(true)
   const [allowInvites, setAllowInvites] = useState(true)
 
-  // Notifications
   const [emailUpdates, setEmailUpdates] = useState(true)
   const [gameAlerts, setGameAlerts] = useState(true)
 
@@ -111,10 +123,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
         setAvatarUrl(p.avatar_url ?? '')
 
         setUsername(asStr(prefs.username, ''))
-        setLanguage((asStr(prefs.language, 'English') as any) === 'Arabic' ? 'Arabic' : 'English')
-        void i18n.changeLanguage(
-  (asStr(prefs.language, 'English') as any) === 'Arabic' ? 'ar' : 'en'
-)
+        setLanguage(parseLang(prefs.language))
 
         setRegion((asStr(prefs.region, 'Middle East') as any) || 'Middle East')
         setTeamColor((asStr(prefs.teamColor, 'Auto') as any) || 'Auto')
@@ -132,7 +141,7 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       } catch (err) {
         console.error('[profile] load failed:', err)
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load profile')
+          setError(err instanceof Error ? err.message : i18n.t('profile.errors.load'))
           setState('error')
         }
       }
@@ -176,26 +185,26 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       const updated = await getMyProfile()
       setProfile(updated)
       setStats(readPlayerStatsFromPreferences(updated.preferences))
-      setNotice('Saved')
+      setNotice(t('profile.notice.saved'))
       setState('ready')
     } catch (err) {
       console.error('[profile] save failed:', err)
-      setError(err instanceof Error ? err.message : 'Failed to save profile')
+      setError(err instanceof Error ? err.message : t('profile.errors.save'))
       setState('error')
     }
   }
 
   async function handleChangePassword() {
-    const p1 = window.prompt('New password:')
+    const p1 = window.prompt(t('profile.password.newPrompt'))
     if (!p1) return
-    const p2 = window.prompt('Repeat new password:')
+    const p2 = window.prompt(t('profile.password.repeatPrompt'))
     if (!p2) return
     if (p1 !== p2) {
-      setNotice('Passwords do not match')
+      setNotice(t('profile.password.mismatch'))
       return
     }
     if (p1.length < 8) {
-      setNotice('Password must be at least 8 characters')
+      setNotice(t('profile.password.tooShort'))
       return
     }
 
@@ -203,10 +212,10 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       setNotice(null)
       const { error } = await supabase.auth.updateUser({ password: p1 })
       if (error) throw error
-      setNotice('Password updated')
+      setNotice(t('profile.password.updated'))
     } catch (err) {
       console.error('[profile] change password failed:', err)
-      setNotice(err instanceof Error ? err.message : 'Failed to change password')
+      setNotice(err instanceof Error ? err.message : t('profile.errors.changePassword'))
     }
   }
 
@@ -216,14 +225,14 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       if (error) throw error
       const s = data.session
       if (!s) {
-        setNotice('No active session')
+        setNotice(t('profile.session.none'))
         return
       }
-      const exp = s.expires_at ? new Date(s.expires_at * 1000).toISOString() : 'unknown'
-      setNotice(`Signed in as: ${s.user?.email ?? 'unknown'} | expires: ${exp}`)
+      const exp = s.expires_at ? new Date(s.expires_at * 1000).toISOString() : t('profile.session.unknown')
+      setNotice(t('profile.session.active', { email: s.user?.email ?? t('profile.session.unknown'), exp }))
     } catch (err) {
       console.error('[profile] session read failed:', err)
-      setNotice(err instanceof Error ? err.message : 'Failed to read session')
+      setNotice(err instanceof Error ? err.message : t('profile.errors.readSession'))
     }
   }
 
@@ -244,12 +253,12 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
       <div className="profileFrame">
         <header className="profileHeader">
           <div>
-            <div className="profileEyebrow">Account Center</div>
-            <h1 className="profileTitle">Profile</h1>
-            <p className="profileSubtitle">Manage identity, game preferences, privacy, and account security.</p>
+            <div className="profileEyebrow">{t('profile.header.eyebrow')}</div>
+            <h1 className="profileTitle">{t('profile.header.title')}</h1>
+            <p className="profileSubtitle">{t('profile.header.subtitle')}</p>
             {profile && (
               <p className="profileSubtitle" style={{ marginTop: 8, opacity: 0.85 }}>
-                User ID: <span style={{ fontFamily: 'monospace' }}>{profile.user_id}</span>
+                {t('profile.header.userId')}: <span style={{ fontFamily: 'monospace' }}>{profile.user_id}</span>
               </p>
             )}
             {notice && (
@@ -261,19 +270,19 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
 
           <div className="profileHeaderActions">
             <button className="homeBtnGhost" type="button" onClick={onBackToHome}>
-              Back To Lobby
+              {t('profile.actions.backToLobby')}
             </button>
             <button className="homeBtnPrimary" type="button" onClick={onBackToGame}>
-              Return To Game
+              {t('profile.actions.returnToGame')}
             </button>
           </div>
         </header>
 
-        {state === 'loading' && <p className="profileSubtitle">Loading…</p>}
+        {state === 'loading' && <p className="profileSubtitle">{t('profile.loading')}</p>}
 
         {state === 'error' && error && (
           <div style={{ padding: 12, borderRadius: 12, border: '1px solid rgba(226,59,59,.35)', background: 'rgba(0,0,0,.25)' }}>
-            <p style={{ margin: 0, fontWeight: 900 }}>Error</p>
+            <p style={{ margin: 0, fontWeight: 900 }}>{t('profile.errorTitle')}</p>
             <p style={{ margin: '6px 0 0 0', opacity: 0.9 }}>{error}</p>
           </div>
         )}
@@ -281,135 +290,129 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
         {profile && (
           <div className="profileGrid">
             <section className="profileCard">
-              <h2>Basic Info</h2>
+              <h2>{t('profile.sections.basicInfo')}</h2>
               <div className="profileFields">
                 <label>
-                  Display Name
-                  <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name" />
+                  {t('profile.fields.displayName')}
+                  <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={t('profile.placeholders.yourName')} />
                 </label>
 
                 <label>
-                  Username
-                  <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="nickname" />
+                  {t('profile.fields.username')}
+                  <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={t('profile.placeholders.nickname')} />
                 </label>
 
                 <label>
-                  Email
-                  <input value={email} disabled placeholder="email" />
+                  {t('profile.fields.email')}
+                  <input value={email} disabled placeholder={t('profile.fields.email')} />
                 </label>
 
                 <label>
-                  Avatar URL
-                  <input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />
+                  {t('profile.fields.avatarUrl')}
+                  <input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder={t('profile.placeholders.avatarUrl')} />
                 </label>
 
                 <label className="isWide">
-                  Bio
-                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} placeholder="Short bio" />
+                  {t('profile.fields.bio')}
+                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} placeholder={t('profile.placeholders.bio')} />
                 </label>
               </div>
             </section>
 
             <section className="profileCard">
-              <h2>Game Preferences</h2>
+              <h2>{t('profile.sections.preferences')}</h2>
               <div className="profileFields">
                 <label>
-                  Language
-                  <select
-  value={language}
-  onChange={(e) => {
-    const v = e.target.value as any
-    setLanguage(v)
-    void i18n.changeLanguage(v === 'Arabic' ? 'ar' : 'en')
-  }}
->
-                    
-                    <option>Arabic</option>
-                    <option>English</option>
+                  {t('profile.fields.language')}
+                  <select value={language} onChange={(e) => setLanguage(e.target.value as UiLang)}>
+                    <option value="ar">{t('profile.options.language.arabic')}</option>
+                    <option value="en">{t('profile.options.language.english')}</option>
                   </select>
                 </label>
 
                 <label>
-                  Region
+                  {t('profile.fields.region')}
                   <select value={region} onChange={(e) => setRegion(e.target.value as any)}>
-                    <option>Middle East</option>
-                    <option>Europe</option>
-                    <option>North America</option>
+                    <option value="Middle East">{t('profile.options.region.middleEast')}</option>
+                    <option value="Europe">{t('profile.options.region.europe')}</option>
+                    <option value="North America">{t('profile.options.region.northAmerica')}</option>
                   </select>
                 </label>
 
                 <label>
-                  Preferred Team
+                  {t('profile.fields.preferredTeam')}
                   <select value={teamColor} onChange={(e) => setTeamColor(e.target.value as any)}>
-                    <option>Blue</option>
-                    <option>Red</option>
-                    <option>Auto</option>
+                    <option value="Blue">{t('profile.options.team.blue')}</option>
+                    <option value="Red">{t('profile.options.team.red')}</option>
+                    <option value="Auto">{t('profile.options.team.auto')}</option>
                   </select>
                 </label>
 
                 <label className="toggleRow">
-                  <span>Use Dark Panels</span>
+                  <span>{t('profile.fields.useDarkPanels')}</span>
                   <input type="checkbox" checked={darkPanels} onChange={(e) => setDarkPanels(e.target.checked)} />
                 </label>
               </div>
             </section>
 
             <section className="profileCard">
-              <h2>Privacy</h2>
+              <h2>{t('profile.sections.privacy')}</h2>
               <div className="profileToggles">
                 <label className="toggleRow">
-                  <span>Public Profile</span>
+                  <span>{t('profile.fields.publicProfile')}</span>
                   <input type="checkbox" checked={publicProfile} onChange={(e) => setPublicProfile(e.target.checked)} />
                 </label>
                 <label className="toggleRow">
-                  <span>Show Online Status</span>
+                  <span>{t('profile.fields.showOnlineStatus')}</span>
                   <input type="checkbox" checked={showOnline} onChange={(e) => setShowOnline(e.target.checked)} />
                 </label>
                 <label className="toggleRow">
-                  <span>Allow Lobby Invites</span>
+                  <span>{t('profile.fields.allowLobbyInvites')}</span>
                   <input type="checkbox" checked={allowInvites} onChange={(e) => setAllowInvites(e.target.checked)} />
                 </label>
               </div>
             </section>
 
             <section className="profileCard">
-              <h2>Notifications</h2>
+              <h2>{t('profile.sections.notifications')}</h2>
               <div className="profileToggles">
                 <label className="toggleRow">
-                  <span>Email Updates</span>
+                  <span>{t('profile.fields.emailUpdates')}</span>
                   <input type="checkbox" checked={emailUpdates} onChange={(e) => setEmailUpdates(e.target.checked)} />
                 </label>
                 <label className="toggleRow">
-                  <span>Game Alerts</span>
+                  <span>{t('profile.fields.gameAlerts')}</span>
                   <input type="checkbox" checked={gameAlerts} onChange={(e) => setGameAlerts(e.target.checked)} />
                 </label>
               </div>
             </section>
 
             <section className="profileCard">
-              <h2>Game Statistics</h2>
+              <h2>{t('profile.sections.statistics')}</h2>
               <div className="profileFields">
                 <label>
-                  Games Played
+                  {t('profile.stats.gamesPlayed')}
                   <input value={String(stats?.games_played ?? 0)} disabled />
                 </label>
                 <label>
-                  Times Won
+                  {t('profile.stats.timesWon')}
                   <input value={String(stats?.times_won ?? 0)} disabled />
                 </label>
                 <label>
-                  Times Lost
+                  {t('profile.stats.timesLost')}
                   <input value={String(stats?.times_lost ?? 0)} disabled />
                 </label>
                 <label>
-                  Win/Loss Ratio
+                  {t('profile.stats.winLossRatio')}
                   <input value={winLossRatio} disabled />
                 </label>
                 <label className="isWide">
-                  Most Teammate
+                  {t('profile.stats.mostTeammate')}
                   <input
                     value={
-                      mostTeammate ? `${mostTeammate.name} (${mostTeammate.games} games)` : 'No teammate data yet'
+                      mostTeammate
+                        ? `${mostTeammate.name} (${mostTeammate.games} ${t('profile.stats.games')})`
+                        : t('profile.stats.noTeammate')
                     }
                     disabled
                   />
@@ -418,43 +421,31 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
             </section>
 
             <section className="profileCard">
-              <h2>Security</h2>
+              <h2>{t('profile.sections.security')}</h2>
               <div className="profileBtnStack">
                 <button className="homeBtnGhost" type="button" onClick={handleChangePassword}>
-                  Change Password
+                  {t('profile.actions.changePassword')}
                 </button>
-                <button
-                  className="homeBtnGhost"
-                  type="button"
-                  onClick={() => setNotice('2FA needs Supabase MFA setup. We can add it later with MFA enrollment APIs.')}
-                >
-                  Manage 2FA
+                <button className="homeBtnGhost" type="button" onClick={() => setNotice(t('profile.notice.twoFaPending'))}>
+                  {t('profile.actions.manage2fa')}
                 </button>
                 <button className="homeBtnGhost" type="button" onClick={handleActiveSession}>
-                  Active Session
+                  {t('profile.actions.activeSession')}
                 </button>
               </div>
             </section>
 
             <section className="profileCard">
-              <h2>Account Actions</h2>
+              <h2>{t('profile.sections.accountActions')}</h2>
               <div className="profileBtnStack">
                 <button className="homeBtnPrimary" type="button" onClick={handleSave} disabled={!canSave || state === 'saving'}>
-                  {state === 'saving' ? 'Saving…' : 'Save Changes'}
+                  {state === 'saving' ? t('profile.actions.saving') : t('profile.actions.saveChanges')}
                 </button>
                 <button className="homeBtnGhost" type="button" onClick={handleExport}>
-                  Export Data
+                  {t('profile.actions.exportData')}
                 </button>
-                <button
-                  className="profileDanger"
-                  type="button"
-                  onClick={() =>
-                    setNotice(
-                      'Delete Account needs a server-side admin action (Supabase auth user deletion). If you want it, we can add an RPC/Edge Function later.'
-                    )
-                  }
-                >
-                  Delete Account
+                <button className="profileDanger" type="button" onClick={() => setNotice(t('profile.notice.deletePending'))}>
+                  {t('profile.actions.deleteAccount')}
                 </button>
               </div>
             </section>
