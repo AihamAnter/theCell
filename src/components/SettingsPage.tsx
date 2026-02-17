@@ -13,6 +13,7 @@ import {
 
 type Props = {
   lobbyCode: string
+  onClose: () => void
   onBackToHome: () => void
   onBackToGame: () => void
 }
@@ -44,7 +45,7 @@ function toInt(v: string, fallback: number) {
   return Number.isFinite(n) ? Math.floor(n) : fallback
 }
 
-export default function SettingsPage({ lobbyCode, onBackToHome, onBackToGame }: Props) {
+export default function SettingsPage({ lobbyCode, onClose, onBackToHome, onBackToGame }: Props) {
   const code = lobbyCode.trim().toUpperCase()
 
   const [state, setState] = useState<LoadState>('loading')
@@ -162,6 +163,9 @@ export default function SettingsPage({ lobbyCode, onBackToHome, onBackToGame }: 
           </div>
 
           <div className="settingsHeaderActions">
+            <button className="homeBtnGhost" type="button" onClick={onClose}>
+              Close Settings
+            </button>
             <button className="homeBtnGhost" type="button" onClick={onBackToGame}>
               Back To Lobby
             </button>

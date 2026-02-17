@@ -252,6 +252,7 @@
       "noTeammate": "لا توجد بيانات زملاء بعد"
     },
     "actions": {
+      "closeProfile": "إغلاق الملف الشخصي",
       "backToLobby": "العودة إلى اللوبي",
       "returnToGame": "العودة إلى اللعبة",
       "changePassword": "تغيير كلمة المرور",

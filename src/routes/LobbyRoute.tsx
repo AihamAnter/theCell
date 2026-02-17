@@ -409,20 +409,24 @@ export default function LobbyRoute() {
     }
   }
 
-  async function handleSetMyTeam(team: 'red' | 'blue') {
-    if (!myUserId) return
-    await handleSetTeam(myUserId, team)
-  }
-
   async function handleToggleSpymaster(targetUserId: string, makeSpymaster: boolean) {
     if (!lobby) return
     try {
       setBusy(makeSpymaster ? t('lobby.busy.makingSpymaster') : t('lobby.busy.makingOperative'))
 
-      const { error } = await supabase.rpc('set_member_spymaster', {
+      const isSelf = Boolean(myUserId && targetUserId === myUserId)
+
+const { error } =
+  isSelf
+    ? await supabase
+        .from('lobby_members')
+        .update({ is_spymaster: makeSpymaster })
+        .eq('lobby_id', lobby.id)
+        .eq('user_id', targetUserId)
+    : await supabase.rpc('set_member_spymaster', {
         p_lobby_id: lobby.id,
         p_user_id: targetUserId,
-        p_is_spymaster: makeSpymaster
+        p_is_spymaster: makeSpymaster,
       })
 
       if (error) throw error
@@ -519,9 +523,12 @@ export default function LobbyRoute() {
       ? t('lobby.role.spymaster')
       : t('lobby.role.operative')
   const myTeamLabel = amSpectator ? '-' : myRow?.team ? t(`lobby.team.${myRow.team}`) : '-'
-  const canSelfChangeTeam = Boolean(myRow && !amSpectator && lobby?.status === 'open')
   const redMembers = members.filter((m) => m.team === 'red' && (m.role === 'owner' || m.role === 'player'))
   const blueMembers = members.filter((m) => m.team === 'blue' && (m.role === 'owner' || m.role === 'player'))
+  const redLeaders = redMembers.filter((m) => m.is_spymaster)
+  const redOperatives = redMembers.filter((m) => !m.is_spymaster)
+  const blueLeaders = blueMembers.filter((m) => m.is_spymaster)
+  const blueOperatives = blueMembers.filter((m) => !m.is_spymaster)
   const spectators = members.filter((m) => m.role === 'spectator')
 
   const btnBase = {
@@ -540,16 +547,13 @@ export default function LobbyRoute() {
     return t('lobby.role.operative')
   }
 
-  function shortUserId(id: string) {
-    if (!id) return '-'
-    return `${id.slice(0, 6)}...${id.slice(-4)}`
-  }
-
-  function renderMemberCard(member: MemberRow, index: number, tone: 'red' | 'blue' | 'neutral') {
+  function renderMemberCard(member: MemberRow, tone: 'red' | 'blue' | 'neutral') {
+    const fallbackIndex = members.findIndex((m) => m.user_id === member.user_id)
+    const nameIndex = fallbackIndex >= 0 ? fallbackIndex : 0
     const pill = statusPill(member.last_seen_at)
     const avatar = avatarForMember(member)
     const fallbackAvatar = fallbackAvatarFor(member.team, `${member.user_id}:fallback`)
-    const toneGlow = tone === 'red' ? '0 0 0 1px rgba(255,95,95,0.35), 0 16px 30px rgba(20,0,0,0.35)' : tone === 'blue' ? '0 0 0 1px rgba(90,140,255,0.38), 0 16px 30px rgba(0,10,26,0.4)' : '0 0 0 1px rgba(255,255,255,0.18), 0 16px 30px rgba(0,0,0,0.34)'
+    const toneGlow = tone === 'red' ? '0 0 0 1px rgba(255,95,95,0.34), 0 10px 22px rgba(20,0,0,0.32)' : tone === 'blue' ? '0 0 0 1px rgba(90,140,255,0.36), 0 10px 22px rgba(0,10,26,0.34)' : '0 0 0 1px rgba(255,255,255,0.16), 0 10px 22px rgba(0,0,0,0.3)'
     const toneBorder =
       tone === 'red'
         ? '1px solid rgba(255,95,95,0.34)'
@@ -571,21 +575,21 @@ export default function LobbyRoute() {
           border: toneBorder,
           background: toneBg,
           boxShadow: `inset 0 0 0 1px rgba(0,0,0,0.42), ${toneGlow}`,
-          padding: 12,
+          padding: 9,
           display: 'grid',
-          gap: 10,
+          gap: 8,
           position: 'relative',
           overflow: 'hidden'
         }}
         className="lobbyMemberCard"
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start' }}>
-          <div style={{ minWidth: 0, display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'start' }}>
+          <div style={{ minWidth: 0, display: 'flex', gap: 8, alignItems: 'center' }}>
             <div className="lobbyMemberAvatarWrap">
               <img
                 className="lobbyMemberAvatar"
                 src={avatar}
-                alt={`${displayNameFor(member, index, t('lobby.labels.player'))} avatar`}
+                alt={`${displayNameFor(member, nameIndex, t('lobby.labels.player'))} avatar`}
                 onError={(e) => {
                   const img = e.currentTarget
                   if (img.src.endsWith(fallbackAvatar)) return
@@ -594,15 +598,14 @@ export default function LobbyRoute() {
               />
             </div>
             <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
-              <div style={{ fontWeight: 900, fontSize: 15 }}>{displayNameFor(member, index, t('lobby.labels.player'))}</div>
-              <div style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.72 }}>{shortUserId(member.user_id)}</div>
+              <div style={{ fontWeight: 900, fontSize: 14 }}>{displayNameFor(member, nameIndex, t('lobby.labels.player'))}</div>
             </div>
           </div>
 
           <div
             style={{
-              fontSize: 11,
-              padding: '4px 8px',
+              fontSize: 10,
+              padding: '3px 7px',
               borderRadius: 999,
               border: '1px solid rgba(255,255,255,0.16)',
               background: pill.bg,
@@ -614,28 +617,72 @@ export default function LobbyRoute() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, opacity: 0.92 }}>
-          <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>{roleBadge(member)}</span>
-          <span style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11, opacity: 0.92 }}>
+          <span style={{ padding: '2px 7px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>{roleBadge(member)}</span>
+          <span style={{ padding: '2px 7px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)' }}>
             {t('lobby.labels.ready')}: {member.is_ready ? t('lobby.labels.yes') : t('lobby.labels.no')}
           </span>
         </div>
 
-        {isOwner && lobby?.status === 'open' && member.role !== 'spectator' && (
+        {(lobby?.status === 'open') && member.role !== 'spectator' && (isOwner || member.user_id === myUserId) && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button onClick={() => handleSetTeam(member.user_id, 'red')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+            <button
+              onClick={() => handleSetTeam(member.user_id, 'red')}
+              disabled={busy !== null}
+              style={{
+                ...btnBase,
+                padding: '6px 9px',
+                fontSize: 11,
+                borderColor: 'rgba(255,110,110,0.7)',
+                background: 'linear-gradient(180deg, rgba(255,96,96,0.34), rgba(120,20,20,0.38))',
+                color: 'rgba(255,236,236,0.98)'
+              }}
+            >
               {t('lobby.team.red')}
             </button>
-            <button onClick={() => handleSetTeam(member.user_id, 'blue')} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+            <button
+              onClick={() => handleSetTeam(member.user_id, 'blue')}
+              disabled={busy !== null}
+              style={{
+                ...btnBase,
+                padding: '6px 9px',
+                fontSize: 11,
+                borderColor: 'rgba(120,170,255,0.75)',
+                background: 'linear-gradient(180deg, rgba(90,140,255,0.34), rgba(18,40,120,0.42))',
+                color: 'rgba(232,242,255,0.98)'
+              }}
+            >
               {t('lobby.team.blue')}
             </button>
             {member.team ? (
               member.is_spymaster ? (
-                <button onClick={() => handleToggleSpymaster(member.user_id, false)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+                <button
+                  onClick={() => handleToggleSpymaster(member.user_id, false)}
+                  disabled={busy !== null}
+                  style={{
+                    ...btnBase,
+                    padding: '6px 9px',
+                    fontSize: 11,
+                    borderColor: 'rgba(150,245,205,0.62)',
+                    background: 'linear-gradient(180deg, rgba(60,200,140,0.26), rgba(10,90,64,0.38))',
+                    color: 'rgba(228,255,243,0.98)'
+                  }}
+                >
                   {t('lobby.role.operative')}
                 </button>
               ) : (
-                <button onClick={() => handleToggleSpymaster(member.user_id, true)} disabled={busy !== null} style={{ ...btnBase, padding: '7px 9px', fontSize: 12 }}>
+                <button
+                  onClick={() => handleToggleSpymaster(member.user_id, true)}
+                  disabled={busy !== null}
+                  style={{
+                    ...btnBase,
+                    padding: '6px 9px',
+                    fontSize: 11,
+                    borderColor: 'rgba(255,220,140,0.72)',
+                    background: 'linear-gradient(180deg, rgba(255,196,92,0.34), rgba(122,84,16,0.42))',
+                    color: 'rgba(255,246,223,0.98)'
+                  }}
+                >
                   {t('lobby.role.spymaster')}
                 </button>
               )
@@ -793,6 +840,21 @@ export default function LobbyRoute() {
           display:grid;
           gap:8px;
         }
+        .lobbyRoleSection{
+          border:1px solid rgba(255,255,255,0.12);
+          border-radius:12px;
+          padding:8px;
+          background:rgba(0,0,0,0.20);
+          display:grid;
+          gap:8px;
+        }
+        .lobbyRoleSectionTitle{
+          font-size:11px;
+          letter-spacing:.08em;
+          text-transform:uppercase;
+          font-weight:900;
+          opacity:.85;
+        }
         .lobbyMemberCard::after{
           content:'';
           position:absolute;
@@ -802,9 +864,9 @@ export default function LobbyRoute() {
           opacity:.34;
         }
         .lobbyMemberAvatarWrap{
-          width:52px;
-          height:52px;
-          border-radius:14px;
+          width:44px;
+          height:44px;
+          border-radius:12px;
           padding:2px;
           background: linear-gradient(135deg, rgba(120,255,255,0.8), rgba(120,120,255,0.28));
           box-shadow: 0 0 0 1px rgba(255,255,255,0.2), 0 8px 18px rgba(0,0,0,0.45);
@@ -815,7 +877,7 @@ export default function LobbyRoute() {
           height:100%;
           display:block;
           object-fit:cover;
-          border-radius:12px;
+          border-radius:10px;
           border:1px solid rgba(255,255,255,0.18);
           background: rgba(0,0,0,0.35);
         }
@@ -936,8 +998,8 @@ export default function LobbyRoute() {
       <div className="lobbyShell">
         <div className="lobbyTopbar">
           <button onClick={() => navigate('/')} style={btnBase}>{t('lobby.nav.home')}</button>
-          <button onClick={() => navigate(`/settings/${lobbyCode}`)} style={btnBase}>{t('lobby.nav.settings')}</button>
-          <button onClick={() => navigate('/profile')} style={btnBase}>{t('lobby.nav.profile')}</button>
+          <button onClick={() => navigate(`/settings/${lobbyCode}`, { state: { from: `${location.pathname}${location.search}` } })} style={btnBase}>{t('lobby.nav.settings')}</button>
+          <button onClick={() => navigate('/profile', { state: { from: `${location.pathname}${location.search}` } })} style={btnBase}>{t('lobby.nav.profile')}</button>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
               onClick={() => void i18n.changeLanguage('en')}
@@ -1002,38 +1064,6 @@ export default function LobbyRoute() {
                   {requireReady && <div>{t('lobby.setup.readyRequired')}: <b>{readyOk ? t('lobby.setup.ok') : t('lobby.setup.notYet')}</b></div>}
                 </div>
 
-                {canSelfChangeTeam && (
-                  <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 13, opacity: 0.92, fontWeight: 800 }}>{t('lobby.actions.chooseTeam')}:</span>
-                    <button
-                      onClick={() => handleSetMyTeam('red')}
-                      disabled={busy !== null || myRow?.team === 'red'}
-                      style={{
-                        ...btnBase,
-                        padding: '7px 10px',
-                        fontSize: 12,
-                        borderColor: myRow?.team === 'red' ? 'rgba(255,120,120,0.58)' : 'rgba(255,120,120,0.36)',
-                        opacity: myRow?.team === 'red' ? 1 : 0.9
-                      }}
-                    >
-                      {t('lobby.actions.switchToRed')}
-                    </button>
-                    <button
-                      onClick={() => handleSetMyTeam('blue')}
-                      disabled={busy !== null || myRow?.team === 'blue'}
-                      style={{
-                        ...btnBase,
-                        padding: '7px 10px',
-                        fontSize: 12,
-                        borderColor: myRow?.team === 'blue' ? 'rgba(120,160,255,0.64)' : 'rgba(120,160,255,0.36)',
-                        opacity: myRow?.team === 'blue' ? 1 : 0.9
-                      }}
-                    >
-                      {t('lobby.actions.switchToBlue')}
-                    </button>
-                  </div>
-                )}
-
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button
                     onClick={handleToggleReady}
@@ -1070,21 +1100,51 @@ export default function LobbyRoute() {
               <div className="lobbyCol red">
                 <div className="lobbyColTitle">{t('lobby.columns.red', { count: redMembers.length })}</div>
                 <div className="lobbyRows">
-                  {redMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : redMembers.map((m, idx) => renderMemberCard(m, idx, 'red'))}
+                  {redMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : (
+                    <>
+                      <div className="lobbyRoleSection">
+                        <div className="lobbyRoleSectionTitle">{t('lobby.role.spymaster')} ({redLeaders.length})</div>
+                        <div className="lobbyRows">
+                          {redLeaders.length === 0 ? <div className="lobbyMuted">-</div> : redLeaders.map((m) => renderMemberCard(m, 'red'))}
+                        </div>
+                      </div>
+                      <div className="lobbyRoleSection">
+                        <div className="lobbyRoleSectionTitle">{t('lobby.setup.operatives')} ({redOperatives.length})</div>
+                        <div className="lobbyRows">
+                          {redOperatives.length === 0 ? <div className="lobbyMuted">-</div> : redOperatives.map((m) => renderMemberCard(m, 'red'))}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="lobbyCol blue">
                 <div className="lobbyColTitle">{t('lobby.columns.blue', { count: blueMembers.length })}</div>
                 <div className="lobbyRows">
-                  {blueMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : blueMembers.map((m, idx) => renderMemberCard(m, idx, 'blue'))}
+                  {blueMembers.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noPlayers')}</div> : (
+                    <>
+                      <div className="lobbyRoleSection">
+                        <div className="lobbyRoleSectionTitle">{t('lobby.role.spymaster')} ({blueLeaders.length})</div>
+                        <div className="lobbyRows">
+                          {blueLeaders.length === 0 ? <div className="lobbyMuted">-</div> : blueLeaders.map((m) => renderMemberCard(m, 'blue'))}
+                        </div>
+                      </div>
+                      <div className="lobbyRoleSection">
+                        <div className="lobbyRoleSectionTitle">{t('lobby.setup.operatives')} ({blueOperatives.length})</div>
+                        <div className="lobbyRows">
+                          {blueOperatives.length === 0 ? <div className="lobbyMuted">-</div> : blueOperatives.map((m) => renderMemberCard(m, 'blue'))}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="lobbyCol neutral">
                 <div className="lobbyColTitle">{t('lobby.columns.spectators', { count: spectators.length })}</div>
                 <div className="lobbyRows">
-                  {spectators.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noSpectators')}</div> : spectators.map((m, idx) => renderMemberCard(m, idx, 'neutral'))}
+                  {spectators.length === 0 ? <div className="lobbyMuted">{t('lobby.empty.noSpectators')}</div> : spectators.map((m) => renderMemberCard(m, 'neutral'))}
                 </div>
               </div>
             </div>

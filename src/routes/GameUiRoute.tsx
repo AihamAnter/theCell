@@ -40,10 +40,10 @@ export default function GameUiRoute() {
           if (!state.lobbyCode) return navigate('/')
           navigate(`/lobby/${state.lobbyCode}`)
         }}
-        onOpenProfile={() => navigate('/profile')}
+        onOpenProfile={() => navigate('/profile', { state: { from: `/game-ui/${gameId}` } })}
         onOpenSettings={() => {
           if (!state.lobbyCode) return
-          navigate(`/settings/${state.lobbyCode}`)
+          navigate(`/settings/${state.lobbyCode}`, { state: { from: `/game-ui/${gameId}` } })
         }}
       />
 

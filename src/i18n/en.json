@@ -252,6 +252,7 @@
       "noTeammate": "No teammate data yet"
     },
     "actions": {
+      "closeProfile": "Close Profile",
       "backToLobby": "Back To Lobby",
       "returnToGame": "Return To Game",
       "changePassword": "Change Password",

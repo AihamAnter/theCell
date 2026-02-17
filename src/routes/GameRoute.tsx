@@ -1062,7 +1062,7 @@ async function handleReveal(pos: number) {
   }
 
   function handleProfile() {
-    navigate('/profile')
+    navigate('/profile', { state: { from: `/game/${gameId}` } })
   }
 
   async function handleCopyLobbyCode() {
@@ -1137,7 +1137,7 @@ useEffect(() => {
     try {
       setBusy(t('game.busy.restarting'))
       const code = await restartLobby(game.lobby_id)
-      navigate(`/settings/${code}`)
+      navigate(`/settings/${code}`, { state: { from: `/game/${gameId}` } })
     } catch (err) {
       console.error('[game] restart failed:', err)
       showCenterNotice(supaErr(err), 'info', 2600)

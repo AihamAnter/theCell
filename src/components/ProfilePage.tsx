@@ -5,6 +5,7 @@ import { getMyProfile, updateMyProfile, type Profile } from '../lib/profile'
 import { getMostTeammate, getWinLossRatio, readPlayerStatsFromPreferences, type PlayerStats } from '../lib/playerStats'
 
 type Props = {
+  onClose: () => void
   onBackToHome: () => void
   onBackToGame: () => void
 }
@@ -55,7 +56,7 @@ function downloadJson(filename: string, obj: unknown) {
   URL.revokeObjectURL(url)
 }
 
-export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
+export default function ProfilePage({ onClose, onBackToHome, onBackToGame }: Props) {
   const { t, i18n } = useTranslation()
 
   const [state, setState] = useState<LoadState>('loading')
@@ -269,6 +270,9 @@ export default function ProfilePage({ onBackToHome, onBackToGame }: Props) {
           </div>
 
           <div className="profileHeaderActions">
+            <button className="homeBtnGhost" type="button" onClick={onClose}>
+              {t('profile.actions.closeProfile')}
+            </button>
             <button className="homeBtnGhost" type="button" onClick={onBackToHome}>
               {t('profile.actions.backToLobby')}
             </button>
