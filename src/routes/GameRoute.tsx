@@ -115,6 +115,16 @@ function fallbackAvatarFor(team: 'red' | 'blue' | null, seed: string): string {
 }
 
 type PeekRow = { pos: number; color: string; at?: string }
+function isDiceOption(value: unknown): value is DiceOption {
+  return (
+    value === 'double_hint' ||
+    value === 'sabotage_reassign' ||
+    value === 'steal_reassign' ||
+    value === 'shield' ||
+    value === 'cancel' ||
+    value === 'swap'
+  )
+}
 
 function getPeeks(state: any, team: 'red' | 'blue' | null): PeekRow[] {
   if (!team) return []
@@ -650,6 +660,13 @@ function handleClueInputBlur() {
         const at = Number(data.at)
         setRevealMarks((prev) => ({ ...prev, [pos]: { pos, byUserId, at: Number.isFinite(at) ? at : Date.now() } }))
       })
+      .on('broadcast', { event: 'dice_roll' }, (payload) => {
+        const data = (payload as any)?.payload as any
+        if (!data || String(data.gameId ?? '') !== gameId) return
+        const option = data.option
+        if (!isDiceOption(option)) return
+        setRolledDiceOption(option)
+      })
 
 
             .subscribe((status) => {
@@ -750,6 +767,24 @@ function handleClueInputBlur() {
       })
     } catch {
       // ignore realtime broadcast errors; local marker still works
+    }
+  }
+  async function broadcastDiceRoll(option: DiceOption) {
+    const ch = channelRef.current
+    if (!ch) return
+    try {
+      await ch.send({
+        type: 'broadcast',
+        event: 'dice_roll',
+        payload: {
+          gameId,
+          option,
+          byUserId: myUserId ?? null,
+          at: Date.now()
+        }
+      })
+    } catch {
+      // ignore realtime broadcast errors; local UI still updates
     }
   }
 
@@ -1402,12 +1437,29 @@ useEffect(() => {
     if (option === 'cancel') return t('game.dice.cancel')
     return t('game.dice.swap')
   }
+  function diceOptionImage(option: DiceOption): string {
+    return diceFacesByOption[option]
+  }
+  function diceOptionEffectText(option: DiceOption): string {
+    if (option === 'double_hint') return t('game.dice.doubleHintHelp')
+    if (option === 'sabotage_reassign') return t('game.dice.sabotageReassignHelp')
+    if (option === 'steal_reassign') return t('game.dice.stealReassignHelp')
+    if (option === 'shield') return t('game.dice.shieldHelp')
+    if (option === 'cancel') return t('game.dice.cancelHelp')
+    return t('game.dice.swapHelp')
+  }
+  function diceOptionNextStepText(option: DiceOption): string {
+    if (option === 'swap') return t('game.dice.swapStep1')
+    if (option === 'sabotage_reassign' || option === 'steal_reassign') return t('game.dice.singleTargetHelp')
+    return t('game.dice.instantApplyHelp')
+  }
 
   async function handleRollDice() {
     if (!isGameActive || !diceUnlocked || diceUsed || busy !== null || dicePicker !== null) return
     const options: DiceOption[] = ['double_hint', 'sabotage_reassign', 'steal_reassign', 'shield', 'cancel', 'swap']
     const option = options[Math.floor(Math.random() * options.length)]
     setRolledDiceOption(option)
+    void broadcastDiceRoll(option)
     showCenterNotice(t('game.notice.diceRoll', { option: diceOptionLabel(option) }), 'info', 1500)
     await runDice(option)
   }
@@ -1575,6 +1627,14 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
     randomPeek: '/assets/icons/helperAction/peek.svg',
     shuffle: '/assets/icons/helperAction/shuffle.svg'
   } as const
+  const diceFacesByOption: Record<DiceOption, string> = {
+    double_hint: '/assets/dice/dice-1.svg',
+    sabotage_reassign: '/assets/dice/dice-2.svg',
+    steal_reassign: '/assets/dice/dice-3.svg',
+    shield: '/assets/dice/dice-4.svg',
+    cancel: '/assets/dice/dice-5.svg',
+    swap: '/assets/dice/dice-6.svg'
+  }
 
   function cardBg(c: GameCard, hidden?: CardColor): string {
     if (c.revealed && c.revealed_color) {
@@ -2555,6 +2615,49 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
             </button>
           </div>
         </div>
+        {rolledDiceOption && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              padding: '8px 10px',
+              margin: '4px 0 8px',
+              width: 'min(680px, 100%)',
+              borderRadius: 12,
+              border: '1px solid rgba(255,220,120,0.38)',
+              background: 'rgba(26,18,8,0.78)',
+              boxShadow: '0 10px 28px rgba(0,0,0,0.45)',
+              position: 'relative',
+              zIndex: 3
+            }}
+            aria-live="polite"
+          >
+            <img
+              src={diceOptionImage(rolledDiceOption)}
+              alt={diceOptionLabel(rolledDiceOption)}
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 8,
+                border: '1px solid rgba(255,255,255,0.18)',
+                background: 'rgba(0,0,0,0.35)',
+                objectFit: 'contain'
+              }}
+            />
+            <div style={{ display: 'grid', gap: 4 }}>
+              <div style={{ fontWeight: 900, fontSize: 13, color: 'rgba(255,242,210,0.98)' }}>
+                {t('game.dice.lastRoll', { option: diceOptionLabel(rolledDiceOption) })}
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,242,210,0.88)', lineHeight: 1.35 }}>
+                {diceOptionEffectText(rolledDiceOption)}
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,232,170,0.95)', lineHeight: 1.35, fontWeight: 800 }}>
+                {diceOptionNextStepText(rolledDiceOption)}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="oc-hud-turn-row">
           {turnClueWord ? (
             <div className={`oc-hud-turn-clue ${turnClueClass}`} title={t('game.header.clue')}>
@@ -2947,7 +3050,24 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         {dicePicker && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 12, background: 'rgba(0,0,0,0.66)', display: 'grid', placeItems: 'center', padding: 14 }}>
             <div style={{ width: 'min(760px, 95vw)', borderRadius: 16, border, background: 'rgba(0,0,0,0.86)', boxShadow: '0 24px 70px rgba(0,0,0,0.72)', padding: 16, display: 'grid', gap: 12 }}>
-              <div style={{ fontWeight: 1000, fontSize: 18 }}>{diceOptionLabel(dicePicker.option)}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <img
+                  src={diceOptionImage(dicePicker.option)}
+                  alt={diceOptionLabel(dicePicker.option)}
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 10,
+                    border: '1px solid rgba(255,255,255,0.18)',
+                    background: 'rgba(0,0,0,0.35)',
+                    objectFit: 'contain'
+                  }}
+                />
+                <div style={{ fontWeight: 1000, fontSize: 18 }}>{diceOptionLabel(dicePicker.option)}</div>
+              </div>
+              <div style={{ opacity: 0.94, fontSize: 13, lineHeight: 1.5, border: '1px solid rgba(255,220,120,0.22)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,220,120,0.08)', color: 'rgba(255,240,196,0.98)' }}>
+                {diceOptionEffectText(dicePicker.option)}
+              </div>
               <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.5, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.05)' }}>
                 {dicePicker.option === 'swap'
                   ? dicePicker.posA === null

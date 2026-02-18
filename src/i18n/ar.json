@@ -394,9 +394,16 @@
       "lastRoll": "آخر رمية: {{option}}",
       "rollHint": "ارمِ للحصول على قدرة نرد عشوائية.",
       "singleTargetHelp": "اختر بطاقة واحدة غير مكشوفة كهدف.",
+      "instantApplyHelp": "يتم تفعيل هذه القدرة فورًا بدون اختيار بطاقة.",
       "swapStep1": "الخطوة 1: اختر البطاقة الأولى غير المكشوفة (A).",
       "swapStep2": "الخطوة 2: اختر بطاقة مختلفة غير مكشوفة (B). البطاقة A الحالية: {{pos}}.",
       "swapSelected": "تم اختيار A: {{posA}} و B: {{posB}}. اضغط تطبيق.",
+      "doubleHintHelp": "يعزز Double Hint تأثير التلميح الحالي لهذا الدور.",
+      "sabotageReassignHelp": "يعيد Sabotage Reassign توزيع هوية بطاقة غير مكشوفة واحدة.",
+      "stealReassignHelp": "يأخذ Steal Reassign هوية بطاقة غير مكشوفة ويعيد توزيعها لصالح فريقك.",
+      "shieldHelp": "يحمي Shield فريقك من تأثير نرد ضار واحد.",
+      "cancelHelp": "يزيل Cancel تأثير نرد نشطًا للخصم.",
+      "swapHelp": "يبدل Swap بين هوية بطاقتين غير مكشوفتين.",
       "doubleHint": "تلميح مضاعف",
       "sabotageReassign": "إعادة توزيع تخريبي",
       "stealReassign": "إعادة توزيع بالسرقة",
@@ -433,3 +440,4 @@
     }
   }
 }
+
