@@ -1,12 +1,12 @@
 import { supabase } from './supabaseClient'
 
 export type DiceOption =
-  | 'double_hint'
-  | 'sabotage_reassign'
-  | 'steal_reassign'
-  | 'shield'
-  | 'cancel'
-  | 'swap'
+  | 'time_bonus_next'
+  | 'peek_assassin'
+  | 'peek_team_card'
+  | 'time_penalty_next'
+  | 'clue_word_max4_next'
+  | 'clue_cap2_next'
 
 export type HelperAction = 'time_cut' | 'random_peek' | 'shuffle_unrevealed'
 

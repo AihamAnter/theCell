@@ -62,15 +62,100 @@ function formatRpcError(context: string, err: unknown): Error {
   return new Error(`${context}: Unknown error`)
 }
 
-export async function startGame(lobbyId: string): Promise<string> {
-  const { data, error } = await supabase.rpc('start_game', {
-  p_lobby_id: lobbyId,
-  p_language: i18n.language === 'ar' ? 'ar' : 'en'
-})
+function readNum(obj: Record<string, unknown>, key: string, fallback: number): number {
+  const v = obj[key]
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return fallback
+}
 
-  if (error) throw formatRpcError('[start_game]', error)
-  if (typeof data !== 'string') throw new Error('[start_game] returned invalid data')
-  return data
+function asRecord(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
+  return null
+}
+
+function readCountFromSettings(
+  settings: Record<string, unknown>,
+  keys: string[],
+  fallback: number
+): number {
+  const scopes: Array<Record<string, unknown> | null> = [
+    settings,
+    asRecord(settings.cardCounts),
+    asRecord(settings.card_counts),
+    asRecord(settings.cards),
+    asRecord(settings.counts)
+  ]
+  for (const scope of scopes) {
+    if (!scope) continue
+    for (const k of keys) {
+      const n = readNum(scope, k, Number.NaN)
+      if (Number.isFinite(n)) return Math.floor(n)
+    }
+  }
+  return fallback
+}
+
+async function tryStartGameRpc(payload: Record<string, unknown>): Promise<string | null> {
+  const { data, error } = await supabase.rpc('start_game', payload)
+  if (error) return null
+  return typeof data === 'string' ? data : null
+}
+
+export async function startGame(lobbyId: string): Promise<string> {
+  const language = i18n.language === 'ar' ? 'ar' : 'en'
+  let settings: Record<string, unknown> = {}
+  try {
+    const { data: lobbyRow } = await supabase.from('lobbies').select('settings').eq('id', lobbyId).single()
+    settings = ((lobbyRow as any)?.settings ?? {}) as Record<string, unknown>
+  } catch {
+    settings = {}
+  }
+
+  const firstTeamCards = Math.max(0, readCountFromSettings(settings, ['firstTeamCards', 'first_team_cards', 'red_cards', 'team_a_cards'], 9))
+  const secondTeamCards = Math.max(0, readCountFromSettings(settings, ['secondTeamCards', 'second_team_cards', 'blue_cards', 'team_b_cards'], 8))
+  const neutralCards = Math.max(0, readCountFromSettings(settings, ['neutralCards', 'neutral_cards'], 7))
+  const assassinCards = Math.max(1, readCountFromSettings(settings, ['assassinCards', 'assassin_cards', 'assassinCount', 'assassin_count'], 1))
+
+  const base = { p_lobby_id: lobbyId, p_language: language }
+  const attempts: Array<Record<string, unknown>> = [
+    {
+      ...base,
+      p_first_team_cards: firstTeamCards,
+      p_second_team_cards: secondTeamCards,
+      p_neutral_cards: neutralCards,
+      p_assassin_cards: assassinCards
+    },
+    {
+      ...base,
+      p_team_a_cards: firstTeamCards,
+      p_team_b_cards: secondTeamCards,
+      p_neutral_cards: neutralCards,
+      p_assassin_cards: assassinCards
+    },
+    {
+      ...base,
+      p_red_cards: firstTeamCards,
+      p_blue_cards: secondTeamCards,
+      p_neutral_cards: neutralCards,
+      p_assassin_cards: assassinCards
+    },
+    {
+      ...base,
+      p_assassin_cards: assassinCards
+    },
+    base
+  ]
+
+  for (const payload of attempts) {
+    const id = await tryStartGameRpc(payload)
+    if (id) return id
+  }
+
+  throw new Error('[start_game] failed for all known RPC signatures')
 }
 
 export async function setClue(gameId: string, word: string, number: number): Promise<void> {

@@ -354,7 +354,7 @@ export default function SettingsPage({ lobbyCode, onClose, onBackToHome, onBackT
                     <input
                       type="number"
                       min={1}
-                      max={2}
+                      max={100}
                       value={form.assassinCards}
                       onChange={(e) => setField('assassinCards', toInt(e.target.value, form.assassinCards))}
                       disabled={!canEdit}

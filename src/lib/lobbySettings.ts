@@ -85,6 +85,35 @@ function readNum(obj: Record<string, unknown>, key: string, fallback: number): n
   return fallback
 }
 
+function readNumAny(obj: Record<string, unknown>, keys: string[], fallback: number): number {
+  for (const k of keys) {
+    const n = readNum(obj, k, Number.NaN)
+    if (Number.isFinite(n)) return n
+  }
+  return fallback
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
+  return null
+}
+
+function readNumFromScopes(
+  root: Record<string, unknown>,
+  keys: string[],
+  scopes: Array<Record<string, unknown> | null>,
+  fallback: number
+): number {
+  const top = readNumAny(root, keys, Number.NaN)
+  if (Number.isFinite(top)) return top
+  for (const s of scopes) {
+    if (!s) continue
+    const v = readNumAny(s, keys, Number.NaN)
+    if (Number.isFinite(v)) return v
+  }
+  return fallback
+}
+
 export function defaultCardCounts(boardSize: number): Pick<
   LobbySettingsForm,
   'firstTeamCards' | 'secondTeamCards' | 'neutralCards' | 'assassinCards'
@@ -148,6 +177,7 @@ export const DEFAULT_SETTINGS_FORM: LobbySettingsForm = {
 
 export function formFromLobby(lobby: Lobby): LobbySettingsForm {
   const s = (lobby.settings ?? {}) as Record<string, unknown>
+  const scopes = [asRecord(s.cardCounts), asRecord(s.card_counts), asRecord(s.cards), asRecord(s.counts)]
 
   const modeRaw = readStr(s, 'mode', 'classic').toLowerCase()
   const mode: LobbyMode = modeRaw === 'powers' ? 'powers' : 'classic'
@@ -202,10 +232,28 @@ export function formFromLobby(lobby: Lobby): LobbySettingsForm {
     allowHomophones: readBool(s, 'allowHomophones', DEFAULT_SETTINGS_FORM.allowHomophones),
     allowTranslations: readBool(s, 'allowTranslations', DEFAULT_SETTINGS_FORM.allowTranslations),
 
-    firstTeamCards: Math.max(0, Math.floor(readNum(s, 'firstTeamCards', countsDefault.firstTeamCards))),
-    secondTeamCards: Math.max(0, Math.floor(readNum(s, 'secondTeamCards', countsDefault.secondTeamCards))),
-    neutralCards: Math.max(0, Math.floor(readNum(s, 'neutralCards', countsDefault.neutralCards))),
-    assassinCards: Math.max(1, Math.floor(readNum(s, 'assassinCards', countsDefault.assassinCards))),
+    firstTeamCards: Math.max(
+      0,
+      Math.floor(
+        readNumFromScopes(s, ['firstTeamCards', 'first_team_cards', 'red_cards', 'team_a_cards'], scopes, countsDefault.firstTeamCards)
+      )
+    ),
+    secondTeamCards: Math.max(
+      0,
+      Math.floor(
+        readNumFromScopes(s, ['secondTeamCards', 'second_team_cards', 'blue_cards', 'team_b_cards'], scopes, countsDefault.secondTeamCards)
+      )
+    ),
+    neutralCards: Math.max(
+      0,
+      Math.floor(readNumFromScopes(s, ['neutralCards', 'neutral_cards'], scopes, countsDefault.neutralCards))
+    ),
+    assassinCards: Math.max(
+      1,
+      Math.floor(
+        readNumFromScopes(s, ['assassinCards', 'assassin_cards', 'assassinCount', 'assassin_count'], scopes, countsDefault.assassinCards)
+      )
+    ),
 
     streakToUnlockDice: Math.max(2, Math.min(8, Math.floor(readNum(s, 'streakToUnlockDice', DEFAULT_SETTINGS_FORM.streakToUnlockDice)))),
     allowTimeCut: readBool(s, 'allowTimeCut', DEFAULT_SETTINGS_FORM.allowTimeCut),
@@ -298,6 +346,31 @@ export async function saveLobbySettings(
     secondTeamCards: form.secondTeamCards,
     neutralCards: form.neutralCards,
     assassinCards: form.assassinCards,
+    // Compatibility aliases for backend/RPC versions that read snake_case or *_count keys.
+    first_team_cards: form.firstTeamCards,
+    second_team_cards: form.secondTeamCards,
+    neutral_cards: form.neutralCards,
+    assassin_cards: form.assassinCards,
+    assassinCount: form.assassinCards,
+    assassin_count: form.assassinCards,
+    cardCounts: {
+      firstTeamCards: form.firstTeamCards,
+      secondTeamCards: form.secondTeamCards,
+      neutralCards: form.neutralCards,
+      assassinCards: form.assassinCards
+    },
+    card_counts: {
+      first_team_cards: form.firstTeamCards,
+      second_team_cards: form.secondTeamCards,
+      neutral_cards: form.neutralCards,
+      assassin_cards: form.assassinCards
+    },
+    cards: {
+      red_cards: form.firstTeamCards,
+      blue_cards: form.secondTeamCards,
+      neutral_cards: form.neutralCards,
+      assassin_cards: form.assassinCards
+    },
 
     streakToUnlockDice: form.streakToUnlockDice,
     allowTimeCut: form.allowTimeCut,

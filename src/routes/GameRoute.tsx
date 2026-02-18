@@ -38,11 +38,18 @@ type HintGuess = { word: string; correct: boolean }
 type HintTrack = { id: string; clue: string; number: number; words: HintGuess[] }
 type ProfileView = { displayName: string; avatarUrl: string }
 type RevealMark = { pos: number; byUserId: string | null; at: number }
-type DicePickerState = {
-  option: 'sabotage_reassign' | 'steal_reassign' | 'swap'
-  posA: number | null
-  posB: number | null
+type PendingTimeMult = {
+  mult: number
+  phase: 'armed' | 'seen_other_team' | 'active'
+  createdAt: number
 }
+type PendingClueLimit = {
+  maxWordLen?: number
+  maxNumber?: number
+  phase: 'armed' | 'seen_other_team' | 'active'
+  createdAt: number
+}
+
 const HEARTBEAT_MS = 30_000
 
 function supaErr(err: unknown): string {
@@ -72,11 +79,71 @@ function clampInt(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n))
 }
 
+function readTeamOrScalarNumber(raw: unknown, team: 'red' | 'blue' | null, fallback: number): number {
+  if (raw === null || raw === undefined) return fallback
+
+  if (typeof raw === 'number' || typeof raw === 'string') {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : fallback
+  }
+
+  if (team && Array.isArray(raw)) {
+    const idx = team === 'red' ? 0 : 1
+    const n = Number(raw[idx])
+    return Number.isFinite(n) ? n : fallback
+  }
+
+  if (team && typeof raw === 'object') {
+    const n = Number((raw as any)?.[team])
+    return Number.isFinite(n) ? n : fallback
+  }
+
+  return fallback
+}
+
+function shouldApplyTimeMultForTurn(args: {
+  currentTurnNo: number
+  multTurnNo: number
+  teamTurnNo: number
+}): boolean {
+  const { currentTurnNo, multTurnNo, teamTurnNo } = args
+
+  const hasMultTurnNo = Number.isFinite(multTurnNo) && multTurnNo >= 0
+  if (!hasMultTurnNo) return true
+
+  if (currentTurnNo === multTurnNo) return true
+  if (Number.isFinite(teamTurnNo) && teamTurnNo >= 0 && teamTurnNo === multTurnNo) return true
+
+  // Fallback: some backends store "next turn no" in a different counter space.
+  // Keep the window tight (1-2 turns) to avoid applying the effect indefinitely.
+  const delta = currentTurnNo - multTurnNo
+  if (delta === 1 || delta === 2) return true
+
+  return false
+}
+
 function formatMMSS(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds))
   const mm = Math.floor(s / 60)
   const ss = s % 60
   return `${mm}:${ss.toString().padStart(2, '0')}`
+}
+
+function shuffleList<T>(arr: T[]): T[] {
+  const out = [...arr]
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
 }
 
 function displayNameOrFallback(name: string | undefined, fallback: string): string {
@@ -117,12 +184,12 @@ function fallbackAvatarFor(team: 'red' | 'blue' | null, seed: string): string {
 type PeekRow = { pos: number; color: string; at?: string }
 function isDiceOption(value: unknown): value is DiceOption {
   return (
-    value === 'double_hint' ||
-    value === 'sabotage_reassign' ||
-    value === 'steal_reassign' ||
-    value === 'shield' ||
-    value === 'cancel' ||
-    value === 'swap'
+    value === 'time_bonus_next' ||
+    value === 'peek_assassin' ||
+    value === 'peek_team_card' ||
+    value === 'time_penalty_next' ||
+    value === 'clue_word_max4_next' ||
+    value === 'clue_cap2_next'
   )
 }
 
@@ -268,17 +335,20 @@ useEffect(() => {
   const [roundCorrectStreak, setRoundCorrectStreak] = useState(0)
   const [rolledDiceOption, setRolledDiceOption] = useState<DiceOption | null>(null)
   const [peekFlash, setPeekFlash] = useState<{ pos: number; color: string } | null>(null)
+  const [shuffleDisplayOrder, setShuffleDisplayOrder] = useState<number[] | null>(null)
   const [showWinTrail, setShowWinTrail] = useState(false)
   const [lobbyCode, setLobbyCode] = useState<string>('')
   const [showRules, setShowRules] = useState(false)
-  const [dicePicker, setDicePicker] = useState<DicePickerState | null>(null)
   const [revealMarks, setRevealMarks] = useState<Record<number, RevealMark>>({})
+  const localTimeMultRef = useRef<Record<'red' | 'blue', PendingTimeMult | null>>({ red: null, blue: null })
+  const localClueLimitRef = useRef<Record<'red' | 'blue', PendingClueLimit | null>>({ red: null, blue: null })
   const channelRef = useRef<any>(null)
   const prevRevealedRef = useRef<Map<number, boolean>>(new Map())
   const fxTimeoutsRef = useRef<number[]>([])
   const suspenseTimeoutRef = useRef<number | null>(null)
   const noticeTimeoutRef = useRef<number | null>(null)
   const peekFlashTimeoutRef = useRef<number | null>(null)
+  const shuffleAnimTokenRef = useRef(0)
   const prevGameRef = useRef<Game | null>(null)
   const statsRecordedGameIdsRef = useRef<Set<string>>(new Set())
   const prevForcedWinnerRef = useRef<'red' | 'blue' | null>(null)
@@ -311,12 +381,54 @@ async function refreshTimerSettings(lobbyId: string): Promise<void> {
 
 function getTurnTotalSeconds(g: Game | null): number {
   if (!g) return timerSettings.turnSeconds
-  const st: any = g.state
+  const st: any = g.state ?? {}
   const base = timerSettings.turnSeconds
-  // If time_cut_mode is "half" for the current team, make the whole turn half duration (refresh-safe).
-  if (timeCutHalfAppliesNow(st, g.current_turn_team)) return Math.max(10, Math.floor(base / 2))
-  return base
+
+  let seconds = base
+
+  // dice next-turn multiplier (0.5 or 1.5)
+  const team = g.current_turn_team
+  const tn = Number(st.turn_no ?? 0)
+  const dice = st?.dice ?? {}
+  const teamTurnNo = team
+    ? readTeamOrScalarNumber(st?.turn_no_by_team ?? st?.team_turn_no ?? st?.turn_no_team, team, NaN)
+    : NaN
+  const multTurn = team
+    ? readTeamOrScalarNumber(dice?.next_time_mult_turn_no ?? dice?.next_time_mult_turn ?? dice?.next_turn_no, team, -1)
+    : -1
+  const mult = team
+    ? readTeamOrScalarNumber(dice?.next_time_mult ?? dice?.next_time_multiplier ?? dice?.time_mult_next, team, 1)
+    : 1
+
+  const hasMeaningfulBackendMult = Number.isFinite(mult) && mult > 0 && Math.abs(mult - 1) > 0.001
+  const applyDiceTimeMult =
+    team !== null &&
+    Number.isFinite(tn) &&
+    hasMeaningfulBackendMult &&
+    shouldApplyTimeMultForTurn({
+      currentTurnNo: tn,
+      multTurnNo: multTurn,
+      teamTurnNo
+    })
+
+  if (applyDiceTimeMult) {
+    seconds = Math.max(10, Math.floor(seconds * mult))
+  } else if (team) {
+    const localPending = localTimeMultRef.current[team]
+    if (localPending) {
+      const isActiveLocalTurn = localPending.phase === 'active'
+      if (isActiveLocalTurn && Number.isFinite(localPending.mult) && localPending.mult > 0) {
+        seconds = Math.max(10, Math.floor(seconds * localPending.mult))
+      }
+    }
+  }
+
+  // helper time cut still applies too
+  if (timeCutHalfAppliesNow(st, team)) seconds = Math.max(10, Math.floor(seconds / 2))
+
+  return seconds
 }
+
 
 function getTurnStartedAt(g: Game | null): string | null {
   if (!g) return null
@@ -426,14 +538,11 @@ function handleClueInputBlur() {
 
   const myPeeks = useMemo(() => getPeeks(game?.state as any, myTeam), [game?.state, myTeam])
   const myStreak = useMemo(() => getStreak(game?.state as any, myTeam), [game?.state, myTeam])
+  const diceUnlockStreak = Math.max(2, Math.floor(timerSettings.streakToUnlockDice))
   const diceFillPercent = useMemo(() => {
     const s = Math.max(0, Math.floor(myStreak))
-    if (s <= 0) return 0
-    if (s === 1) return 20
-    if (s === 2) return 50
-    if (s === 3) return 80
-    return 100
-  }, [myStreak])
+    return clampInt(Math.round((s / diceUnlockStreak) * 100), 0, 100)
+  }, [myStreak, diceUnlockStreak])
   const memberTeamById = useMemo(() => {
     const out = new Map<string, 'red' | 'blue' | null>()
     for (const m of members) out.set(m.user_id, m.team)
@@ -450,7 +559,6 @@ function handleClueInputBlur() {
     return { red, blue }
   }, [cards])
 
-  const diceUnlockStreak = 4
   const diceUnlocked = myStreak >= diceUnlockStreak
   const diceUsed = useMemo(() => diceUsedThisTurn(game?.state as any), [game?.state])
 
@@ -523,6 +631,7 @@ function handleClueInputBlur() {
         window.clearTimeout(peekFlashTimeoutRef.current)
         peekFlashTimeoutRef.current = null
       }
+      shuffleAnimTokenRef.current += 1
     }
   }, [])
 
@@ -665,6 +774,13 @@ function handleClueInputBlur() {
         if (!data || String(data.gameId ?? '') !== gameId) return
         const option = data.option
         if (!isDiceOption(option)) return
+        const teamFromPayload = data.team === 'red' || data.team === 'blue' ? data.team : null
+        const byUserId = typeof data.byUserId === 'string' ? data.byUserId : null
+        const roller = byUserId ? membersRef.current.find((m) => m.user_id === byUserId) : null
+        const rollerTeam = teamFromPayload ?? roller?.team ?? null
+        const turnNo = Number(data.turnNo ?? (game?.state as any)?.turn_no ?? NaN)
+        queueLocalTimeMult(rollerTeam, option, turnNo)
+        queueLocalClueLimit(rollerTeam, option, turnNo)
         setRolledDiceOption(option)
       })
 
@@ -779,12 +895,40 @@ function handleClueInputBlur() {
         payload: {
           gameId,
           option,
+          team: myTeam,
+          turnNo: Number((game?.state as any)?.turn_no ?? NaN),
           byUserId: myUserId ?? null,
           at: Date.now()
         }
       })
     } catch {
       // ignore realtime broadcast errors; local UI still updates
+    }
+  }
+
+  function queueLocalTimeMult(team: 'red' | 'blue' | null, option: DiceOption, sourceTurnNo: number) {
+    if (!team) return
+    if (!Number.isFinite(sourceTurnNo)) return
+    if (option !== 'time_bonus_next' && option !== 'time_penalty_next') return
+
+    localTimeMultRef.current[team] = {
+      mult: option === 'time_bonus_next' ? 1.5 : 0.5,
+      phase: 'armed',
+      createdAt: Date.now()
+    }
+  }
+  function queueLocalClueLimit(team: 'red' | 'blue' | null, option: DiceOption, sourceTurnNo: number) {
+    if (!team) return
+    if (!Number.isFinite(sourceTurnNo)) return
+    if (option !== 'clue_word_max4_next' && option !== 'clue_cap2_next') return
+
+    const targetTeam: 'red' | 'blue' = team === 'red' ? 'blue' : 'red'
+    const prev = localClueLimitRef.current[targetTeam]
+    localClueLimitRef.current[targetTeam] = {
+      maxWordLen: option === 'clue_word_max4_next' ? 4 : prev?.maxWordLen,
+      maxNumber: option === 'clue_cap2_next' ? 2 : prev?.maxNumber,
+      phase: 'armed',
+      createdAt: Date.now()
     }
   }
 
@@ -982,6 +1126,49 @@ function handleClueInputBlur() {
     }
   }, [game?.current_turn_team, game?.clue_word, game?.clue_number, game?.state])
 
+  // Local fallback for dice time modifiers:
+  // armed -> seen_other_team -> active (next same-team turn), then clear on team switch.
+  useEffect(() => {
+    if (!game) return
+    const currentTeam = game.current_turn_team
+    if (currentTeam !== 'red' && currentTeam !== 'blue') return
+
+    let changed = false
+    for (const team of ['red', 'blue'] as const) {
+      const pending = localTimeMultRef.current[team]
+      if (pending) {
+        if (pending.phase === 'armed' && currentTeam !== team) {
+          localTimeMultRef.current[team] = { ...pending, phase: 'seen_other_team' }
+          changed = true
+        } else if (pending.phase === 'seen_other_team' && currentTeam === team) {
+          localTimeMultRef.current[team] = { ...pending, phase: 'active' }
+          changed = true
+        } else if (pending.phase === 'active' && currentTeam !== team) {
+          localTimeMultRef.current[team] = null
+          changed = true
+        }
+      }
+
+      const pendingClue = localClueLimitRef.current[team]
+      if (pendingClue) {
+        if (pendingClue.phase === 'armed' && currentTeam !== team) {
+          localClueLimitRef.current[team] = { ...pendingClue, phase: 'seen_other_team' }
+          changed = true
+        } else if (pendingClue.phase === 'seen_other_team' && currentTeam === team) {
+          localClueLimitRef.current[team] = { ...pendingClue, phase: 'active' }
+          changed = true
+        } else if (pendingClue.phase === 'active' && currentTeam !== team) {
+          localClueLimitRef.current[team] = null
+          changed = true
+        }
+      }
+    }
+
+    if (changed) {
+      setTurnLeft(computeTurnLeftFromGame(game))
+    }
+  }, [game?.current_turn_team, game?.state, timerSettings.turnSeconds, timerSettings.useTurnTimer])
+
   // ticking timer (recomputes from persisted turn start time when available)
 useEffect(() => {
   if (state !== 'ready') return
@@ -1149,16 +1336,8 @@ async function handleReveal(pos: number) {
     }
 
     try {
-      clearRevealMark(pos)
       setPendingRevealPos(pos)
-
-      // tiny delay keeps the UI feel responsive (also prevents accidental double taps)
-      await new Promise<void>((resolve) => {
-        suspenseTimeoutRef.current = window.setTimeout(() => {
-          suspenseTimeoutRef.current = null
-          resolve()
-        }, 500)
-      })
+      clearRevealMark(pos)
 
       const res = await revealCard(gameId, pos)
       if (res.revealed_color === 'assassin') {
@@ -1233,10 +1412,35 @@ async function handleReveal(pos: number) {
 
   async function handleSetClue() {
     if (!gameId) return
+    const word = clueWord.trim()
+    const num = clampInt(Number(clueNumber), 0, 9)
+    if (!word) return
+
+    const team = myTeam
+    if (team === 'red' || team === 'blue') {
+      const pending = localClueLimitRef.current[team]
+      if (pending?.phase === 'active') {
+        if (pending.maxWordLen && word.length > pending.maxWordLen) {
+          showCenterNotice(t('game.dice.clueWordMax4NextHelp'), 'info', 2400)
+          return
+        }
+        if (pending.maxNumber && num > pending.maxNumber) {
+          showCenterNotice(t('game.dice.clueCap2NextHelp'), 'info', 2400)
+          return
+        }
+      }
+    }
+
     try {
       setIsEditingClue(false)
       setBusy(t('game.busy.settingClue'))
-      await setClue(gameId, clueWord, clueNumber)
+      await setClue(gameId, word, num)
+      if (team === 'red' || team === 'blue') {
+        const pending = localClueLimitRef.current[team]
+        if (pending?.phase === 'active') {
+          localClueLimitRef.current[team] = null
+        }
+      }
     } catch (err) {
       console.error('[game] set clue failed:', err)
       showCenterNotice(supaErr(err), 'info', 2600)
@@ -1379,89 +1583,84 @@ useEffect(() => {
     }
   }
 
-  async function runDice(option: DiceOption) {
-    if (!gameId) return
-    if (!isGameActive) return
-    if (dicePicker) return
-    if (option === 'sabotage_reassign' || option === 'steal_reassign' || option === 'swap') {
-      setDicePicker({ option, posA: null, posB: null })
-      return
-    }
+  async function runDice(option: DiceOption): Promise<boolean> {
+    if (!gameId) return false
+    if (!isGameActive) return false
     try {
       setBusy(t('game.busy.usingDice'))
-      // simple options
       const res = await useDiceOption(gameId, option, {})
+
+      if (option === 'peek_assassin' || option === 'peek_team_card') {
+        const pos = Number((res as any)?.pos)
+        if (Number.isFinite(pos)) {
+          setPeekFlash({
+            pos,
+            color: option === 'peek_assassin' ? 'A' : 'T'
+          })
+          if (peekFlashTimeoutRef.current !== null) window.clearTimeout(peekFlashTimeoutRef.current)
+          peekFlashTimeoutRef.current = window.setTimeout(() => {
+            setPeekFlash(null)
+            peekFlashTimeoutRef.current = null
+          }, 1000)
+        }
+      }
+
       console.log('[dice result]', res)
       showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
+      return true
     } catch (err) {
       console.error('[dice] failed:', err)
       showCenterNotice(supaErr(err), 'info', 2600)
+      return false
     } finally {
       setBusy(null)
     }
+    return false
   }
 
-  async function submitDicePicker() {
-    if (!gameId || !dicePicker) return
-    const { option, posA, posB } = dicePicker
-    if ((option === 'sabotage_reassign' || option === 'steal_reassign') && !Number.isFinite(Number(posA))) {
-      showCenterNotice(t('game.notice.invalidPosition'), 'info', 2000)
-      return
-    }
-    if (option === 'swap' && (!Number.isFinite(Number(posA)) || !Number.isFinite(Number(posB)) || posA === posB)) {
-      showCenterNotice(t('game.notice.invalidPositions'), 'info', 2000)
-      return
-    }
-    try {
-      setBusy(t('game.busy.usingDice'))
-      const params =
-        option === 'swap'
-          ? { pos_a: Number(posA), pos_b: Number(posB) }
-          : { pos: Number(posA) }
-      const res = await useDiceOption(gameId, option, params)
-      console.log('[dice result]', res)
-      showCenterNotice(t('game.notice.diceUsed'), 'info', 1600)
-      setDicePicker(null)
-    } catch (err) {
-      console.error('[dice] failed:', err)
-      showCenterNotice(supaErr(err), 'info', 2600)
-    } finally {
-      setBusy(null)
-    }
-  }
+  
   function diceOptionLabel(option: DiceOption): string {
-    if (option === 'double_hint') return t('game.dice.doubleHint')
-    if (option === 'sabotage_reassign') return t('game.dice.sabotageReassign')
-    if (option === 'steal_reassign') return t('game.dice.stealReassign')
-    if (option === 'shield') return t('game.dice.shield')
-    if (option === 'cancel') return t('game.dice.cancel')
-    return t('game.dice.swap')
-  }
+  if (option === 'time_bonus_next') return t('game.dice.timeBonusNext')
+  if (option === 'peek_assassin') return t('game.dice.peekAssassin')
+  if (option === 'peek_team_card') return t('game.dice.peekTeamCard')
+  if (option === 'time_penalty_next') return t('game.dice.timePenaltyNext')
+  if (option === 'clue_word_max4_next') return t('game.dice.clueWordMax4Next')
+  return t('game.dice.clueCap2Next')
+}
   function diceOptionImage(option: DiceOption): string {
     return diceFacesByOption[option]
   }
   function diceOptionEffectText(option: DiceOption): string {
-    if (option === 'double_hint') return t('game.dice.doubleHintHelp')
-    if (option === 'sabotage_reassign') return t('game.dice.sabotageReassignHelp')
-    if (option === 'steal_reassign') return t('game.dice.stealReassignHelp')
-    if (option === 'shield') return t('game.dice.shieldHelp')
-    if (option === 'cancel') return t('game.dice.cancelHelp')
-    return t('game.dice.swapHelp')
-  }
+  if (option === 'time_bonus_next') return t('game.dice.timeBonusNextHelp')
+  if (option === 'peek_assassin') return t('game.dice.peekAssassinHelp')
+  if (option === 'peek_team_card') return t('game.dice.peekTeamCardHelp')
+  if (option === 'time_penalty_next') return t('game.dice.timePenaltyNextHelp')
+  if (option === 'clue_word_max4_next') return t('game.dice.clueWordMax4NextHelp')
+  return t('game.dice.clueCap2NextHelp')
+}
   function diceOptionNextStepText(option: DiceOption): string {
-    if (option === 'swap') return t('game.dice.swapStep1')
-    if (option === 'sabotage_reassign' || option === 'steal_reassign') return t('game.dice.singleTargetHelp')
     return t('game.dice.instantApplyHelp')
   }
 
   async function handleRollDice() {
-    if (!isGameActive || !diceUnlocked || diceUsed || busy !== null || dicePicker !== null) return
-    const options: DiceOption[] = ['double_hint', 'sabotage_reassign', 'steal_reassign', 'shield', 'cancel', 'swap']
+    if (!canOperate || !diceUnlocked || diceUsed || busy !== null) return
+    const options: DiceOption[] = [
+  'time_bonus_next',
+  'peek_assassin',
+  'peek_team_card',
+  'time_penalty_next',
+  'clue_word_max4_next',
+  'clue_cap2_next',
+]
+
     const option = options[Math.floor(Math.random() * options.length)]
+    const ok = await runDice(option)
+    if (!ok) return
+    queueLocalTimeMult(myTeam, option, Number((game?.state as any)?.turn_no ?? NaN))
+    queueLocalClueLimit(myTeam, option, Number((game?.state as any)?.turn_no ?? NaN))
     setRolledDiceOption(option)
     void broadcastDiceRoll(option)
     showCenterNotice(t('game.notice.diceRoll', { option: diceOptionLabel(option) }), 'info', 1500)
-    await runDice(option)
   }
 
   async function runHelper(action: HelperAction) {
@@ -1485,6 +1684,7 @@ useEffect(() => {
       } else if (action === 'time_cut') {
 showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUpperCase() }), 'info', 2200)
       } else {
+        await animateLocalShuffle()
         showCenterNotice(t('game.notice.shuffleDone'), 'info', 2200)
       }
     } catch (err) {
@@ -1493,6 +1693,37 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
     } finally {
       setBusy(null)
     }
+  }
+
+  async function animateLocalShuffle() {
+    const unrevealed = cards.filter((c) => !c.revealed).map((c) => c.pos)
+    if (unrevealed.length < 2) return
+
+    const baseOrder = cards.map((c) => c.pos)
+    const baseSlotByPos = new Map<number, number>()
+    for (let i = 0; i < baseOrder.length; i += 1) baseSlotByPos.set(baseOrder[i], i)
+
+    const token = shuffleAnimTokenRef.current + 1
+    shuffleAnimTokenRef.current = token
+    const frameMs = [90, 100, 115, 130, 145, 165, 190, 220]
+
+    for (const ms of frameMs) {
+      if (token !== shuffleAnimTokenRef.current) return
+      const randomized = shuffleList(unrevealed)
+      const nextOrder = [...baseOrder]
+      for (let i = 0; i < unrevealed.length; i += 1) {
+        const slot = baseSlotByPos.get(unrevealed[i])
+        if (slot === undefined) continue
+        nextOrder[slot] = randomized[i]
+      }
+      setShuffleDisplayOrder(nextOrder)
+      await waitMs(ms)
+    }
+
+    if (token !== shuffleAnimTokenRef.current) return
+    await waitMs(130)
+    if (token !== shuffleAnimTokenRef.current) return
+    setShuffleDisplayOrder(null)
   }
 
   const pillCount = clampInt(game?.guesses_remaining ?? 0, 0, 99)
@@ -1508,6 +1739,10 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
   const canOperate = !amSpymaster && isMyTurn && isGameActive && hasClue && pillCount > 0
   const canEndTurnOperate = !amSpymaster && isMyTurn && isGameActive && hasClue
   const canSpymaster = amSpymaster && isMyTurn && isGameActive
+  const myActiveClueLimit =
+    myTeam && (myTeam === 'red' || myTeam === 'blue') ? localClueLimitRef.current[myTeam] : null
+  const clueWordMax = myActiveClueLimit?.phase === 'active' && myActiveClueLimit.maxWordLen ? myActiveClueLimit.maxWordLen : undefined
+  const clueNumberMax = myActiveClueLimit?.phase === 'active' && myActiveClueLimit.maxNumber ? myActiveClueLimit.maxNumber : 9
   const shouldShakeCards = isGameActive && turnLeft > 0 && turnLeft <= 10
   const currentTurnTeam = isGameActive ? game?.current_turn_team ?? null : null
   const turnIndicatorClass = !isGameActive ? 'done' : currentTurnTeam === 'red' ? 'red' : currentTurnTeam === 'blue' ? 'blue' : 'idle'
@@ -1551,6 +1786,18 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         .sort((a, b) => a.pos - b.pos),
     [cards]
   )
+  const boardCards = useMemo(() => {
+    if (!shuffleDisplayOrder || shuffleDisplayOrder.length === 0) return cards
+    const rank = new Map<number, number>()
+    for (let i = 0; i < shuffleDisplayOrder.length; i += 1) rank.set(shuffleDisplayOrder[i], i)
+    return [...cards].sort((a, b) => {
+      const ra = rank.get(a.pos)
+      const rb = rank.get(b.pos)
+      const fa = ra === undefined ? a.pos : ra
+      const fb = rb === undefined ? b.pos : rb
+      return fa - fb
+    })
+  }, [cards, shuffleDisplayOrder])
 
   function diceCardName(pos: number | null): string {
     if (pos === null || !Number.isFinite(pos)) return '-'
@@ -1628,13 +1875,14 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
     shuffle: '/assets/icons/helperAction/shuffle.svg'
   } as const
   const diceFacesByOption: Record<DiceOption, string> = {
-    double_hint: '/assets/dice/dice-1.svg',
-    sabotage_reassign: '/assets/dice/dice-2.svg',
-    steal_reassign: '/assets/dice/dice-3.svg',
-    shield: '/assets/dice/dice-4.svg',
-    cancel: '/assets/dice/dice-5.svg',
-    swap: '/assets/dice/dice-6.svg'
-  }
+  time_bonus_next: '/assets/dice/dice-1.svg',
+  peek_assassin: '/assets/dice/dice-2.svg',
+  peek_team_card: '/assets/dice/dice-3.svg',
+  time_penalty_next: '/assets/dice/dice-4.svg',
+  clue_word_max4_next: '/assets/dice/dice-5.svg',
+  clue_cap2_next: '/assets/dice/dice-6.svg',
+}
+
 
   function cardBg(c: GameCard, hidden?: CardColor): string {
     if (c.revealed && c.revealed_color) {
@@ -2149,6 +2397,9 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
         .oc-card.oc-card-interactive:hover{
           animation: oc-suspense-hover 0.55s ease forwards;
         }
+        .oc-card.oc-card-shuffling{
+          animation: oc-shuffle-wobble 0.34s ease-in-out infinite;
+        }
         .oc-card.oc-card-pending{
           animation: oc-suspense-breathe 0.5s cubic-bezier(.2,.75,.2,1) forwards;
         }
@@ -2213,6 +2464,13 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           50%{ transform: translate(1px, -1px) rotate(0.45deg); }
           75%{ transform: translate(-1px, -1px) rotate(-0.35deg); }
           100%{ transform: translate(0, 0) rotate(0deg); }
+        }
+        @keyframes oc-shuffle-wobble{
+          0%{ transform: translateY(0) rotate(0deg) scale(1); }
+          25%{ transform: translateY(-1px) rotate(-1.2deg) scale(1.02); }
+          50%{ transform: translateY(1px) rotate(1.6deg) scale(0.99); }
+          75%{ transform: translateY(-0.6px) rotate(-0.8deg) scale(1.01); }
+          100%{ transform: translateY(0) rotate(0deg) scale(1); }
         }
         @keyframes oc-turn-pulse{
           0%{ transform: translateY(0); filter: brightness(1); }
@@ -2368,6 +2626,9 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           border: 1px solid rgba(255,255,255,0.14);
           background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.36));
           box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42);
+        }
+        .oc-cards-grid.oc-cards-grid-shuffling{
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,214,120,0.28), 0 0 30px rgba(255,214,120,0.16);
         }
         .oc-team-panel{
           border-radius: 18px;
@@ -2559,7 +2820,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                   : t('game.dice.roll')
                 : t('game.dice.streakProgress', { streak: myStreak, target: diceUnlockStreak })
             }
-            disabled={!isGameActive || !diceUnlocked || diceUsed || busy !== null || dicePicker !== null}
+            disabled={!canOperate || !diceUnlocked || diceUsed || busy !== null}
             onClick={handleRollDice}
             style={{
               background: `linear-gradient(0deg, rgba(255,208,104,0.98) 0%, rgba(255,208,104,0.98) ${diceFillPercent}%, rgba(28,18,52,0.78) ${diceFillPercent}%, rgba(28,18,52,0.78) 100%)`,
@@ -2790,6 +3051,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                         onChange={(e) => setClueWord(e.target.value)}
                         onFocus={() => setIsEditingClue(true)}
                         onBlur={handleClueInputBlur}
+                        maxLength={clueWordMax}
                         placeholder={t('game.inputs.clueWord')}
                         style={{ flex: '1 1 220px', padding: '12px 12px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.35)', color: 'rgba(255,255,255,0.92)', fontWeight: 900, outline: 'none' }}
                       />
@@ -2801,7 +3063,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                         onFocus={() => setIsEditingClue(true)}
                         onBlur={handleClueInputBlur}
                         min={0}
-                        max={9}
+                        max={clueNumberMax}
                         style={{ width: 110, padding: '12px 12px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(0,0,0,0.35)', color: 'rgba(255,255,255,0.92)', fontWeight: 900, outline: 'none' }}
                       />
                       <button onClick={handleSetClue} disabled={busy !== null || clueWord.trim().length === 0} style={{ padding: '12px 16px', borderRadius: 14, border: '1px solid rgba(170,255,255,0.35)', background: 'rgba(200,255,255,0.10)', color: 'rgba(255,255,255,0.95)', fontWeight: 900, cursor: 'pointer' }}>
@@ -2810,8 +3072,8 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                     </div>
                   )}
 
-                  <div className="oc-cards-grid">
-                    {cards.map((c, idx) => {
+                  <div className={`oc-cards-grid ${shuffleDisplayOrder ? 'oc-cards-grid-shuffling' : ''}`}>
+                    {boardCards.map((c, idx) => {
                       const hidden = amSpymaster ? keyMap.get(c.pos) : undefined
                       const corner = hidden ? keyColorText(hidden) : null
                       const fxClass = fxClassFor(c.pos)
@@ -2826,7 +3088,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
                       return (
                         <div key={c.pos} className={`oc-card-shell ${shouldShakeCards ? 'oc-last10' : ''}`} style={{ animationDelay: `${idx * 12}ms` }}>
                           <button
-                            className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${spymasterCrossedClass} ${markedClass} ${fxClass}`.trim()}
+                            className={`oc-card ${interactiveClass} ${pendingClass} ${peekClass} ${revealedClass} ${spymasterCrossedClass} ${markedClass} ${fxClass} ${shuffleDisplayOrder && !c.revealed ? 'oc-card-shuffling' : ''}`.trim()}
                             onClick={(e) => {
                               const target = e.target as HTMLElement | null
                               if (target?.closest('[data-mark-remove="1"]')) return
@@ -3047,90 +3309,7 @@ showCenterNotice(t('game.notice.timeCutApplied', { team: String(res.team).toUppe
           </div>
         )}
 
-        {dicePicker && (
-          <div style={{ position: 'absolute', inset: 0, zIndex: 12, background: 'rgba(0,0,0,0.66)', display: 'grid', placeItems: 'center', padding: 14 }}>
-            <div style={{ width: 'min(760px, 95vw)', borderRadius: 16, border, background: 'rgba(0,0,0,0.86)', boxShadow: '0 24px 70px rgba(0,0,0,0.72)', padding: 16, display: 'grid', gap: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <img
-                  src={diceOptionImage(dicePicker.option)}
-                  alt={diceOptionLabel(dicePicker.option)}
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 10,
-                    border: '1px solid rgba(255,255,255,0.18)',
-                    background: 'rgba(0,0,0,0.35)',
-                    objectFit: 'contain'
-                  }}
-                />
-                <div style={{ fontWeight: 1000, fontSize: 18 }}>{diceOptionLabel(dicePicker.option)}</div>
-              </div>
-              <div style={{ opacity: 0.94, fontSize: 13, lineHeight: 1.5, border: '1px solid rgba(255,220,120,0.22)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,220,120,0.08)', color: 'rgba(255,240,196,0.98)' }}>
-                {diceOptionEffectText(dicePicker.option)}
-              </div>
-              <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.5, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.05)' }}>
-                {dicePicker.option === 'swap'
-                  ? dicePicker.posA === null
-                    ? t('game.dice.swapStep1')
-                    : dicePicker.posB === null
-                      ? t('game.dice.swapStep2', { pos: diceCardName(dicePicker.posA) })
-                      : t('game.dice.swapSelected', { posA: diceCardName(dicePicker.posA), posB: diceCardName(dicePicker.posB) })
-                  : t('game.dice.singleTargetHelp')}
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {unrevealedCards.map((c) => {
-                  const selected = c.pos === dicePicker.posA || c.pos === dicePicker.posB
-                  return (
-                    <button
-                      key={`dice-pos-${c.pos}`}
-                      type="button"
-                      onClick={() => {
-                        if (dicePicker.option === 'swap') {
-                          if (dicePicker.posA === null) {
-                            setDicePicker({ ...dicePicker, posA: c.pos })
-                            return
-                          }
-                          if (dicePicker.posB === null) {
-                            setDicePicker({ ...dicePicker, posB: c.pos })
-                            return
-                          }
-                          setDicePicker({ ...dicePicker, posA: c.pos, posB: null })
-                          return
-                        }
-                        setDicePicker({ ...dicePicker, posA: c.pos })
-                      }}
-                      style={{
-                        minWidth: 88,
-                        padding: '8px 10px',
-                        borderRadius: 10,
-                        border: selected ? '1px solid rgba(255,220,120,0.72)' : '1px solid rgba(255,255,255,0.22)',
-                        background: selected ? 'rgba(255,220,120,0.22)' : 'rgba(255,255,255,0.08)',
-                        color: '#fff',
-                        fontWeight: 900,
-                        cursor: 'pointer'
-                      }}
-                      title={`${c.word} (#${c.pos})`}
-                    >
-                      {c.word || `#${c.pos}`}
-                    </button>
-                  )
-                })}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button onClick={() => setDicePicker(null)} style={{ padding: '9px 12px', borderRadius: 10, border, background: 'rgba(255,255,255,0.10)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>
-                  {t('game.actions.close')}
-                </button>
-                <button
-                  onClick={submitDicePicker}
-                  disabled={busy !== null || (dicePicker.option === 'swap' ? dicePicker.posA === null || dicePicker.posB === null || dicePicker.posA === dicePicker.posB : dicePicker.posA === null)}
-                  style={{ padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(170,255,255,0.42)', background: 'rgba(200,255,255,0.12)', color: '#fff', fontWeight: 900, cursor: 'pointer' }}
-                >
-                  {t('game.dice.apply')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+       
 
         {busy && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.60)', zIndex: 10 }}>
